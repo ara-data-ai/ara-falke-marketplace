@@ -1,0 +1,21 @@
+# Falke bid-tools plugin — shipped-bundle hygiene
+# ------------------------------------------------
+# Keep the shipped plugin free of internal run-log scaffolding, client inputs/
+# outputs, generated spreadsheets, and Python build artifacts. These directories
+# are useful in the working tree but must never enter the pushed (private) repo.
+
+# Internal run-log capture scaffolding (not needed at runtime)
+captures/
+
+# Per-project client inputs / generated outputs
+Inputs/
+Outputs/
+
+# Generated spreadsheets (engine output + bundled binary fixtures/templates)
+*.xlsx
+
+# Python build / cache artifacts
+__pycache__/
+.pytest_cache/
+*.pyc
+venv/

@@ -1,0 +1,36 @@
+# known_firms.yaml — Falke recurring-firm quirk library
+# -----------------------------------------------------
+# Maintained by Marvin (domain). Each new recurring firm whose first bid reveals
+# a habitual quirk gets hand-leveled against the gold standard, then codified
+# here. This file is the ONLY place firm-specific behavior lives — no firm names
+# in engine source (confidentiality + maintainability).
+#
+# MATCHING (C3): a bidder matches a firm entry iff ANY of its `match` terms is a
+# case-insensitive SUBSTRING of the extracted contractor_name. `match` terms are
+# deliberately specific (full distinctive tokens, not short fragments) to avoid
+# false collisions. If a contractor_name matches MORE THAN ONE firm entry, the
+# engine MUST NOT pick one (no first-wins) — it emits RED KNOWN_FIRM_AMBIGUOUS
+# and applies NO reclass and NO firm-selected profile to that bid (the bid still
+# gets signature-based code-format detection per §1, which is name-independent).
+
+firms:
+  - firm_id: robmar
+    match: ["robmar"]                 # distinctive; unlikely to collide
+    # Reclassification = destructive (moves dollars). Applied ONLY when this firm
+    # is positively + unambiguously matched. Each rule fires per matching line.
+    reclassifications:
+      - rule_id: ROBMAR_FLOORING_LABOR
+        from: "DIV 13 00 00"
+        to:   "DIV 09 00 00"
+        when_description_contains_all: ["flooring", "labor"]   # case-insensitive AND
+      - rule_id: ROBMAR_DUMPSTER
+        from: "DIV 11 00 00"
+        to:   "DIV 01 00 00"
+        when_description_contains_all: ["dumpster"]            # single keyword
+
+  - firm_id: pbs
+    match: ["principal builders"]     # see collision note below — NOT bare "pbs"
+    code_format_profile: csi_1995_2digit   # selects the §3 profile (cross-check)
+    # No reclassifications: PBS's quirk is purely the legacy code format, which is
+    # detected by signature (§1). The profile here is belt-and-suspenders for the
+    # audit trail; detection does NOT depend on this name match.

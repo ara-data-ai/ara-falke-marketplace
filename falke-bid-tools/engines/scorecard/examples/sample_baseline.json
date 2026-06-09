@@ -1,0 +1,13 @@
+[
+  {"scope": "Interior demolition", "basis": "Modeled allowance", "cost": "$200,000", "value": 200000},
+  {"scope": "Flooring + slab prep", "basis": "Modeled allowance", "cost": "$594,000", "value": 594000},
+  {"scope": "Ceilings (framing/drywall/feature)", "basis": "Modeled allowance", "cost": "$322,000", "value": 322000},
+  {"scope": "Electrical + lighting", "basis": "Modeled allowance", "cost": "$400,000", "value": 400000},
+  {"scope": "Fire alarm relocation", "basis": "Modeled allowance", "cost": "$220,000", "value": 220000},
+  {"scope": "Plumbing / ADA restrooms", "basis": "Modeled allowance", "cost": "$240,000", "value": 240000},
+  {"scope": "Millwork / reception / veneer", "basis": "Modeled allowance", "cost": "$475,000", "value": 475000},
+  {"scope": "Glass / specialty elements", "basis": "Modeled allowance", "cost": "$180,000", "value": 180000},
+  {"scope": "General conditions (occupied high-rise)", "basis": "Modeled allowance", "cost": "$400,000", "value": 400000},
+  {"scope": "Direct trades subtotal", "basis": "Sum of trade lines", "cost": "$3,031,000", "value": 3031000, "kind": "subtotal"},
+  {"scope": "GC OH&P (modeled) 12%", "basis": "12% x direct subtotal", "cost": "$364,000", "value": 363720, "kind": "subtotal"}
+]

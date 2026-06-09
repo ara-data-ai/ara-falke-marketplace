@@ -1,0 +1,13 @@
+{
+  "name": "ara-falke",
+  "owner": {
+    "name": "ARA Data & AI Consulting"
+  },
+  "plugins": [
+    {
+      "name": "falke-bid-tools",
+      "source": "./falke-bid-tools",
+      "description": "Turn a folder of contractor bid PDFs into a leveled bid-comparison matrix and a board-ready scorecard."
+    }
+  ]
+}
