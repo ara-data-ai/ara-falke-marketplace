@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "falke-bid-tools",
   "displayName": "Falke Bid Tools",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Turn a folder of contractor bid PDFs into a leveled bid-comparison matrix and a board-ready scorecard.",
   "author": { "name": "ARA Data & AI Consulting" },
   "keywords": ["construction", "bid-comparison", "scorecard", "falke"]

@@ -192,7 +192,7 @@ Project identity for this matrix (please confirm or correct):
   project_address : <pre-filled, e.g. "100 Bayshore Dr, …">
   gross_sf        : <pre-filled from bids, e.g. 22,500>  ← the $/SF basis
   sf_basis_label  : <ask: what does this SF measure? e.g. "balcony SF">
-  rfp_label       : <optional, e.g. "RFP Feb-2026 Rev 3">
+  rfp_label       : <optional, e.g. "RFP Rev 1">
 
 Confirm these, or tell me what to change.
 ```
@@ -216,7 +216,7 @@ project_name: "Harbor View Tower"
 project_address: "100 Bayshore Dr, Sometown FL 00000"
 gross_sf: 22500
 sf_basis_label: "balcony SF"
-rfp_label: "RFP Feb-2026 Rev 3"
+rfp_label: "RFP Rev 1"
 ```
 
 You MAY omit `gross_sf` here and resolve it purely through the SF gate in Step 3
@@ -521,8 +521,8 @@ filename whenever the user supplied one.
 
 **Worked examples:**
 
-- `project_name="Seaside Terrace Condominium"`, `rfp_label="RFP Feb-2026 Rev 3"`
-  → `Seaside Terrace Condominium - Bid Comparison Matrix - RFP Feb-2026 Rev 3.xlsx`
+- `project_name="Seaside Terrace Condominium"`, `rfp_label="RFP Rev 1"`
+  → `Seaside Terrace Condominium - Bid Comparison Matrix - RFP Rev 1.xlsx`
 - `project_name="Harbor View Tower"`, no `rfp_label`
   → `Harbor View Tower - Bid Comparison Matrix.xlsx`
 - `rfp_label="RFP 2/2026: Rev 3"` (illegal `:` and `/`)

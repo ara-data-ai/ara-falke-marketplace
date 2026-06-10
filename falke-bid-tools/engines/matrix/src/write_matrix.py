@@ -906,6 +906,61 @@ def _populate_data_sheet(
     return footer_summaries
 
 
+def _used_width_chars(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+    used_width: int,
+) -> float:
+    """Approximate the character capacity of one wrapped line across the merged
+    banner (sum of the set column widths from A through ``used_width``).
+
+    openpyxl column width is roughly in characters of the default font, so the
+    sum is a usable estimate of how many characters fit on one line of the
+    full-width merged banner — used to size the row height so the text shows
+    horizontally instead of stacking in column A.
+    """
+    from openpyxl.utils import get_column_letter
+
+    total = 0.0
+    for col in range(1, used_width + 1):
+        dim = ws.column_dimensions.get(get_column_letter(col))
+        total += (dim.width if dim is not None and dim.width else 8.43)
+    return total
+
+
+def _render_full_width_banner(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+    row: int,
+    text: str,
+    fill: PatternFill,
+    used_width: int,
+    bold: bool,
+) -> None:
+    """Render ONE banner row as a merged, full-width, readable block.
+
+    Shared by both the YELLOW leveled-view banner and the RED quarantine banner:
+    fill col A → ``used_width`` with ``fill``, MERGE the row across that width so
+    the long text flows HORIZONTALLY (instead of stacking into a tall, narrow
+    column-A block), set ``wrap_text``, and give the row an explicit height sized
+    to the wrapped-line count so the full text is visible. Overrides whatever was
+    in those cells; does not shift data rows.
+    """
+    c = ws.cell(row=row, column=1)
+    c.value = text
+    c.font = Font(bold=bold)
+    c.alignment = Alignment(wrap_text=True, vertical="top")
+    # Fill across the used width FIRST so every underlying cell is filled even
+    # before the merge collapses them visually.
+    for col in range(1, used_width + 1):
+        ws.cell(row=row, column=col).fill = fill
+    # MERGE the row across the full used width so the text flows horizontally.
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=used_width)
+    # Explicit row height: estimate wrapped-line count from text length vs the
+    # merged width's character capacity, ~15 pts per line (default font).
+    line_chars = _used_width_chars(ws, used_width)
+    est_lines = max(1, ceil(len(text) / max(line_chars, 1.0)))
+    ws.row_dimensions[row].height = est_lines * 15.0
+
+
 def _write_leveled_banner(
     ws: openpyxl.worksheet.worksheet.Worksheet,
     num_contractors: int,
@@ -914,18 +969,17 @@ def _write_leveled_banner(
 
     Bold line 1 + provenance line 2, both YELLOW so they read as "interpreted,
     verify". Written AFTER the header so it overrides the title/details cells.
+    Each line is a MERGED full-width block with an explicit row height (shared
+    ``_render_full_width_banner``) so the long text flows horizontally instead of
+    stacking into a tall, narrow column-A block.
     """
     used_width = _col_start(max(num_contractors - 1, 0)) + 2
     for row, (text, weight_bold) in enumerate(
         [(_LEVELED_BANNER_LINE_1, True), (_LEVELED_BANNER_LINE_2, False)], start=1
     ):
-        c = ws.cell(row=row, column=1)
-        c.value = text
-        c.font = Font(bold=weight_bold)
-        c.alignment = Alignment(wrap_text=True)
-        # YELLOW across the used width so the banner is visible end-to-end.
-        for col in range(1, used_width + 1):
-            ws.cell(row=row, column=col).fill = YELLOW_FILL
+        _render_full_width_banner(
+            ws, row, text, YELLOW_FILL, used_width, bold=weight_bold
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1023,27 +1077,6 @@ _GRAND_TOTAL_COMPONENT_KEYS = (
 )
 
 
-def _used_width_chars(
-    ws: openpyxl.worksheet.worksheet.Worksheet,
-    used_width: int,
-) -> float:
-    """Approximate the character capacity of one wrapped line across the merged
-    banner (sum of the set column widths from A through ``used_width``).
-
-    openpyxl column width is roughly in characters of the default font, so the
-    sum is a usable estimate of how many characters fit on one line of the
-    full-width merged banner — used to size the row height so the text shows
-    horizontally instead of stacking in column A.
-    """
-    from openpyxl.utils import get_column_letter
-
-    total = 0.0
-    for col in range(1, used_width + 1):
-        dim = ws.column_dimensions.get(get_column_letter(col))
-        total += (dim.width if dim is not None and dim.width else 8.43)
-    return total
-
-
 def _write_quarantine_banner(
     ws: openpyxl.worksheet.worksheet.Worksheet,
     num_contractors: int,
@@ -1054,38 +1087,21 @@ def _write_quarantine_banner(
 
     Each banner row is MERGED across the full used width (col A → last contractor
     column) so the long L2/L3 paragraphs flow HORIZONTALLY as a proper full-width
-    banner instead of stacking into a tall, narrow column-A block. Each merged row
-    gets ``wrap_text`` + an explicit row height sized to the text so it is fully
-    visible. Solid RED across the used width, Line 1 bold. Overrides whatever is in
-    those rows (title/details on Bid_Form; the writer leaves rows 1–3 for it on
-    Leveled_Normalized). Does not shift data rows.
+    banner instead of stacking into a tall, narrow column-A block (shared
+    ``_render_full_width_banner``). Solid RED across the used width, Line 1 bold.
+    Overrides whatever is in those rows (title/details on Bid_Form; the writer
+    leaves rows 1–3 for it on Leveled_Normalized). Does not shift data rows.
     """
-    from openpyxl.utils import get_column_letter
-
     used_width = _col_start(max(num_contractors - 1, 0)) + 2
-    last_col = get_column_letter(used_width)
-    line_chars = _used_width_chars(ws, used_width)
     lines = [
         (_QUARANTINE_BANNER_LINE_1, True),
         (_quarantine_banner_line_2(n), False),
         (_QUARANTINE_BANNER_LINE_3, False),
     ]
     for offset, (text, weight_bold) in enumerate(lines):
-        row = start_row + offset
-        c = ws.cell(row=row, column=1)
-        c.value = text
-        c.font = Font(bold=weight_bold)
-        c.alignment = Alignment(wrap_text=True, vertical="top")
-        # RED across the used width FIRST so every underlying cell is filled even
-        # before the merge collapses them visually.
-        for col in range(1, used_width + 1):
-            ws.cell(row=row, column=col).fill = RED_FILL
-        # MERGE the row across the full used width so the text flows horizontally.
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=used_width)
-        # Explicit row height: estimate wrapped-line count from the text length vs
-        # the merged width's character capacity, ~15 pts per line (default font).
-        est_lines = max(1, ceil(len(text) / max(line_chars, 1.0)))
-        ws.row_dimensions[row].height = est_lines * 15.0
+        _render_full_width_banner(
+            ws, start_row + offset, text, RED_FILL, used_width, bold=weight_bold
+        )
 
 
 def _mark_cell(ws, row: int, col: int, written: str, expected: str,
@@ -1436,6 +1452,17 @@ def apply_quarantine(
         ws_lev = wb["Leveled_Normalized"]
         ws_lev.insert_rows(1, 3)
         _write_quarantine_banner(ws_lev, num_contractors, n, start_row=1)
+        # insert_rows shifts the yellow banner's cell VALUES down to rows 4–5 but
+        # openpyxl does not carry the merged ranges or row heights through the
+        # shift — so re-render the yellow banner full-width at its new rows via the
+        # shared helper, keeping both banners merged + readable (RED above YELLOW).
+        used_width_lev = _col_start(max(num_contractors - 1, 0)) + 2
+        for offset, (text, bold) in enumerate(
+            [(_LEVELED_BANNER_LINE_1, True), (_LEVELED_BANNER_LINE_2, False)]
+        ):
+            _render_full_width_banner(
+                ws_lev, 4 + offset, text, YELLOW_FILL, used_width_lev, bold=bold
+            )
         _mark_failing_cells(ws_lev, "Leveled_Normalized", ordered_leveled, failures)
 
     # --- AUDIT: append the RED tie-out failure rows + the QUARANTINE summary line ---
