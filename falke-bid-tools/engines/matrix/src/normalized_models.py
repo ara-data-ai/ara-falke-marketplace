@@ -160,6 +160,8 @@ class NormalizedFooter(BaseModel):
     general_liability_insurance: CellValue
     builders_risk_insurance: CellValue
     gc_fee: CellValue
+    overhead_and_profit: CellValue
+    other_fees_subtotal: CellValue
     grand_total: CellValue
     bond: CellValue
 
@@ -185,6 +187,106 @@ class NormalizedFooter(BaseModel):
     Bid alternates (add/deduct options), surfaced for their OWN section in the
     matrix — never folded into the base/leveled total (M7, instrument-separation).
     """
+
+
+# ---------------------------------------------------------------------------
+# Grand-total composition — the SINGLE SOURCE OF TRUTH
+# ---------------------------------------------------------------------------
+#
+# The grand total is composed of the construction subtotal plus the footer
+# fee/insurance components a contractor states. Firms differ in WHICH rows they
+# populate: some split insurance into GL + Builders Risk; others (e.g. PBS) fold
+# insurance into `other_fees_subtotal` and break out `overhead_and_profit`
+# separately. Conversely, some firms repeat their fee total in
+# `other_fees_subtotal` as a MEMO line that duplicates GL/BR/GC already counted —
+# adding it would double-count.
+#
+# `grand_total_component_amounts()` resolves this once, for everyone. It composes
+# STRUCTURE-FIRST from the fee rows — NOT by back-solving from the stated grand
+# total (which can be wrong): `other_fees_subtotal` is treated as an additive
+# insurance/fee line ONLY when it is not already explained by a roll-up of
+# GL/BR/GC/O&P already counted AND the insurance rows are absent (genuinely
+# distinct from the fees already counted). The stated grand total is then a
+# CHECK, not the decider — when structure-based composition does NOT tie to it,
+# audit.py raises FOOTER_DISCREPANCY (RED) rather than silently composing to the
+# wrong number. audit.py (FOOTER_DISCREPANCY), write_matrix.py (the rendered
+# footer rows), and reconcile.py (Stage 6b read-back) all consume THIS function
+# so the three stay structurally identical.
+
+# $1 tolerance, matching FOOTER_DISCREPANCY / Stage-6b tie-out.
+_GRAND_TOTAL_TOLERANCE = Decimal("1")
+
+
+def grand_total_component_amounts(footer: "NormalizedFooter") -> dict[str, Decimal]:
+    """Return the ADDITIVE footer components that compose the grand total.
+
+    Keys are stable footer identifiers; values are the numeric contribution of
+    each component (0 when absent). The sum of the returned values equals the
+    stated grand total within $1 for a well-formed bid. `other_fees_subtotal` is
+    included only when it is a genuine additive line (insurance/fee not otherwise
+    stated) rather than a memo duplicating GL/BR/GC already counted — decided
+    STRUCTURE-FIRST from the fee rows themselves, never by back-solving from the
+    contractor's stated grand total (which can itself be wrong). The stated total
+    is a CHECK applied downstream by audit.py's FOOTER_DISCREPANCY, not the
+    decider here.
+    """
+    def _amt(cell: CellValue) -> Decimal:
+        return cell.amount if (cell.state == CellState.AMOUNT and cell.amount is not None) else Decimal("0")
+
+    construction = _amt(footer.construction_subtotal)
+    gl = _amt(footer.general_liability_insurance)
+    br = _amt(footer.builders_risk_insurance)
+    gc = _amt(footer.gc_fee)
+    ohp = _amt(footer.overhead_and_profit)
+    other_fees = _amt(footer.other_fees_subtotal)
+    bond = _amt(footer.bond)
+
+    base: dict[str, Decimal] = {
+        "CONSTRUCTION_SUBTOTAL": construction,
+        "GL_INSURANCE": gl,
+        "BUILDERS_RISK": br,
+        "GC_FEE": gc,
+        "OVERHEAD_PROFIT": ohp,
+        "BOND": bond,
+    }
+
+    # Decide whether other_fees_subtotal is additive, STRUCTURE-FIRST — never by
+    # back-solving from the contractor's stated grand total. The stated total can
+    # itself be wrong (dual-total columns, OCR garble); composing to match it
+    # would silently mirror a wrong number with no flag. So we classify on the
+    # structure of the fee rows, and let the stated total be a CHECK (audit.py's
+    # FOOTER_DISCREPANCY), not the decider.
+    #
+    #   MEMO (exclude): other_fees reconciles (within $1) to a roll-up of fee
+    #   rows ALREADY counted in `base` — i.e. it equals (GL+BR+GC), or GC alone,
+    #   or (GL+BR+GC+O&P). That is a contractor "Total Fees/Markup" subtotal line;
+    #   adding it would double-count.
+    #
+    #   ADDITIVE (include): other_fees is NOT explained by those already-counted
+    #   rows AND the insurance rows it would represent are absent — the PBS
+    #   pattern, where GL and BR are both blank, so insurance can only live in
+    #   other_fees.
+    #
+    # When neither rule fires (other_fees is unexplained but GL/BR are present),
+    # we keep it OUT (conservative): it is most likely a memo we can't tie to a
+    # specific roll-up, and the FOOTER_DISCREPANCY check will surface the gap
+    # rather than us silently inflating the total.
+    if other_fees > Decimal("0"):
+        memo_rollups = (gl + br + gc, gc, gl + br + gc + ohp)
+        is_memo = any(
+            abs(other_fees - rollup) <= _GRAND_TOTAL_TOLERANCE
+            for rollup in memo_rollups
+        )
+        insurance_absent = gl == Decimal("0") and br == Decimal("0")
+        if not is_memo and insurance_absent:
+            base["OTHER_FEES"] = other_fees
+
+    return base
+
+
+def grand_total_component_sum(footer: "NormalizedFooter") -> Decimal:
+    """Sum of the additive grand-total components (see component-amounts above)."""
+    return sum(grand_total_component_amounts(footer).values(), Decimal("0"))
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +328,38 @@ class BidSummaryFlag(BaseModel):
 
     value: Optional[str] = None
     """The concrete value (e.g. native code, '15') surfaced on the AUDIT row."""
+
+
+# ---------------------------------------------------------------------------
+# Reclassification recommendation (Option C — annotate-only on the mirror)
+# ---------------------------------------------------------------------------
+
+class ReclassRecommendation(BaseModel):
+    """One known-firm reclassification, recorded as a RECOMMENDATION (Option C §1.3).
+
+    Detection-only artifact: it identifies a matched line item and the division
+    Marvin recommends normalizing it to, WITHOUT moving the dollars on the
+    faithful-mirror Bid_Form. It is the single source for the in-place marker
+    (§2), the AUDIT reframe (§5), and the leveled-view move (§3).
+    """
+
+    line_item_desc: str
+    """The matched line item's description (the cell key on the mirror)."""
+
+    from_division: str
+    """Canonical code the contractor filed it under (e.g. DIV 11 00 00)."""
+
+    to_division: str
+    """Canonical code Marvin recommends (e.g. DIV 01 00 00)."""
+
+    to_division_name: str
+    """Display name of the target (e.g. General Requirements)."""
+
+    amount: Optional[Decimal] = None
+    """The line amount (for the marker text); None if not separately priced."""
+
+    rule_id: str
+    """Provenance (e.g. ROBMAR_DUMPSTER)."""
 
 
 # ---------------------------------------------------------------------------
@@ -280,3 +414,10 @@ class NormalizedBid(BaseModel):
 
     summary_flags: list[BidSummaryFlag] = Field(default_factory=list)
     """Structured flags consumed by the board-memo generator."""
+
+    reclass_recommendations: list[ReclassRecommendation] = Field(default_factory=list)
+    """
+    Known-firm reclassification RECOMMENDATIONS (Option C §1.3). On the
+    faithful-mirror Bid_Form these are annotations only — the dollars stay
+    as-submitted. The leveled-view builder (build_normalized_view) applies them.
+    """

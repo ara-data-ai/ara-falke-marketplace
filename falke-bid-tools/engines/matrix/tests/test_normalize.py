@@ -27,7 +27,7 @@ from src.models import (
     InputType,
     LineItem,
 )
-from src.normalize import compute_cross_bid_stats, normalize_bid
+from src.normalize import build_normalized_view, compute_cross_bid_stats, normalize_bid
 from src.normalized_models import CellState, NormalizedBid
 
 
@@ -426,7 +426,9 @@ class TestRule2CodeFormatRemap:
 # ---------------------------------------------------------------------------
 
 class TestRule3RobmarReclassifications:
-    """Robmar-specific misclassified line items are moved to the correct division."""
+    """Option C: known-firm reclass is ANNOTATE-ONLY on the mirror (dollars stay
+    as submitted + a recommendation is recorded); the move is applied only in the
+    leveled view via build_normalized_view."""
 
     def _robmar_doc(self, divisions: list[DivisionBid]) -> BidDocument:
         return _minimal_doc(
@@ -435,8 +437,8 @@ class TestRule3RobmarReclassifications:
             divisions=divisions,
         )
 
-    def test_flooring_labor_under_div13_reclassified_to_div09(self):
-        """Robmar 'Flooring (Labor)' under DIV 13 → reclassified to DIV 09."""
+    def test_flooring_labor_stays_on_mirror_moves_in_leveled(self):
+        """Robmar 'Flooring (Labor)' stays in DIV 13 on the mirror, moves to DIV 09 leveled."""
         divisions = [
             _div(
                 "DIV 13 00 00", "Special Construction",
@@ -457,30 +459,39 @@ class TestRule3RobmarReclassifications:
         doc = self._robmar_doc(divisions)
         bid = normalize_bid(doc)
 
-        # Flooring (Labor) must be in DIV 09
+        # MIRROR: Flooring (Labor) stays in DIV 13 (as-submitted, foots to bid).
+        div13 = next(d for d in bid.divisions if d.csi_code == "DIV 13 00 00")
+        assert any("flooring" in lbl.lower() and "labor" in lbl.lower()
+                   for lbl in div13.line_item_cells)
+        assert div13.subtotal_cell.amount == Decimal("23000")
+        # Not present in DIV 09 on the mirror.
         div09 = next((d for d in bid.divisions if d.csi_code == "DIV 09 00 00"), None)
         assert div09 is not None
-        div09_labels = [lbl.lower() for lbl in div09.line_item_cells.keys()]
-        assert any("flooring" in lbl and "labor" in lbl for lbl in div09_labels), (
-            f"Flooring (Labor) not found in DIV 09: {list(div09.line_item_cells.keys())}"
-        )
+        assert not any("flooring" in lbl.lower() and "labor" in lbl.lower()
+                       for lbl in div09.line_item_cells)
 
-        # Warning must be emitted
-        warnings_joined = " ".join(bid.normalization_warnings)
-        assert "flooring" in warnings_joined.lower() and "div 13" in warnings_joined.lower(), (
-            f"Expected Flooring reclassification warning. Got: {bid.normalization_warnings}"
-        )
+        # A recommendation is recorded (DIV 13 → DIV 09).
+        recs = [r for r in bid.reclass_recommendations
+                if "flooring" in r.line_item_desc.lower()]
+        assert recs and recs[0].from_division == "DIV 13 00 00"
+        assert recs[0].to_division == "DIV 09 00 00"
 
-        # Flooring (Labor) must NOT remain in DIV 13
-        div13 = next((d for d in bid.divisions if d.csi_code == "DIV 13 00 00"), None)
-        if div13:
-            div13_labels = [lbl.lower() for lbl in div13.line_item_cells.keys()]
-            assert not any("flooring" in lbl and "labor" in lbl for lbl in div13_labels), (
-                "Flooring (Labor) should have been removed from DIV 13"
-            )
+        # Warning reflects recommendation framing.
+        warnings_joined = " ".join(bid.normalization_warnings).lower()
+        assert "flooring" in warnings_joined and "div 13" in warnings_joined
 
-    def test_dumpsters_under_div11_reclassified_to_div01(self):
-        """Robmar 'Dumpster' under DIV 11 → reclassified to DIV 01."""
+        # LEVELED view: the move IS applied (DIV 09 gains flooring; DIV 13 loses it).
+        leveled = build_normalized_view(bid, doc)
+        lev09 = next(d for d in leveled.divisions if d.csi_code == "DIV 09 00 00")
+        lev13 = next(d for d in leveled.divisions if d.csi_code == "DIV 13 00 00")
+        assert any("flooring" in lbl.lower() and "labor" in lbl.lower()
+                   for lbl in lev09.line_item_cells)
+        assert not any("flooring" in lbl.lower() and "labor" in lbl.lower()
+                       for lbl in lev13.line_item_cells)
+        assert lev13.subtotal_cell.amount == Decimal("5000")
+
+    def test_dumpsters_stay_on_mirror_move_in_leveled(self):
+        """Robmar 'Dumpster' stays in DIV 11 on the mirror, moves to DIV 01 leveled."""
         divisions = [
             _div(
                 "DIV 11 00 00", "Equipment",
@@ -501,27 +512,28 @@ class TestRule3RobmarReclassifications:
         doc = self._robmar_doc(divisions)
         bid = normalize_bid(doc)
 
-        # Dumpsters must be in DIV 01
-        div01 = next((d for d in bid.divisions if d.csi_code == "DIV 01 00 00"), None)
-        assert div01 is not None
-        div01_labels = [lbl.lower() for lbl in div01.line_item_cells.keys()]
-        assert any("dumpster" in lbl for lbl in div01_labels), (
-            f"Dumpsters not found in DIV 01: {list(div01.line_item_cells.keys())}"
-        )
+        # MIRROR: Dumpsters stay in DIV 11.
+        div11 = next(d for d in bid.divisions if d.csi_code == "DIV 11 00 00")
+        assert any("dumpster" in lbl.lower() for lbl in div11.line_item_cells)
+        assert div11.subtotal_cell.amount == Decimal("21500")
+        div01 = next(d for d in bid.divisions if d.csi_code == "DIV 01 00 00")
+        assert not any("dumpster" in lbl.lower() for lbl in div01.line_item_cells)
 
-        # Warning emitted
-        warnings_joined = " ".join(bid.normalization_warnings)
-        assert "dumpster" in warnings_joined.lower() and "div 11" in warnings_joined.lower(), (
-            f"Expected Dumpster reclassification warning. Got: {bid.normalization_warnings}"
-        )
+        recs = [r for r in bid.reclass_recommendations
+                if "dumpster" in r.line_item_desc.lower()]
+        assert recs and recs[0].from_division == "DIV 11 00 00"
+        assert recs[0].to_division == "DIV 01 00 00"
 
-        # Must not remain in DIV 11
-        div11 = next((d for d in bid.divisions if d.csi_code == "DIV 11 00 00"), None)
-        if div11:
-            div11_labels = [lbl.lower() for lbl in div11.line_item_cells.keys()]
-            assert not any("dumpster" in lbl for lbl in div11_labels), (
-                "Dumpsters should have been removed from DIV 11"
-            )
+        warnings_joined = " ".join(bid.normalization_warnings).lower()
+        assert "dumpster" in warnings_joined and "div 11" in warnings_joined
+
+        # LEVELED: Dumpsters land in DIV 01; DIV 11 loses them.
+        leveled = build_normalized_view(bid, doc)
+        lev01 = next(d for d in leveled.divisions if d.csi_code == "DIV 01 00 00")
+        lev11 = next(d for d in leveled.divisions if d.csi_code == "DIV 11 00 00")
+        assert any("dumpster" in lbl.lower() for lbl in lev01.line_item_cells)
+        assert not any("dumpster" in lbl.lower() for lbl in lev11.line_item_cells)
+        assert lev11.subtotal_cell.amount == Decimal("15000")
 
     def test_non_robmar_contractor_not_reclassified(self):
         """A non-Robmar contractor's misplaced items are NOT reclassified."""
@@ -536,13 +548,14 @@ class TestRule3RobmarReclassifications:
         )
         bid = normalize_bid(doc)
 
-        # Flooring (Labor) stays in DIV 13
+        # Flooring (Labor) stays in DIV 13, no recommendation recorded.
         div13 = next((d for d in bid.divisions if d.csi_code == "DIV 13 00 00"), None)
         assert div13 is not None
         assert "Flooring (Labor)" in div13.line_item_cells
+        assert bid.reclass_recommendations == []
 
     def test_robmar_description_matching_is_case_insensitive(self):
-        """Robmar rule keyword matching is case-insensitive."""
+        """Robmar rule keyword matching is case-insensitive — recommendation recorded."""
         div = _div(
             "DIV 13 00 00", "Special Construction",
             line_items=[LineItem(description="FLOORING (LABOR)", amount=Decimal("18000"))],
@@ -553,10 +566,13 @@ class TestRule3RobmarReclassifications:
             divisions=[div],
         )
         bid = normalize_bid(doc)
-        # Should be reclassified to DIV 09
-        all_codes = [d.csi_code for d in bid.divisions]
-        div09 = next((d for d in bid.divisions if d.csi_code == "DIV 09 00 00"), None)
-        assert div09 is not None, f"DIV 09 not found; divisions: {all_codes}"
+        # Mirror keeps it in place; recommendation targets DIV 09.
+        recs = [r for r in bid.reclass_recommendations]
+        assert recs and recs[0].to_division == "DIV 09 00 00"
+        # Leveled view places it in DIV 09.
+        leveled = build_normalized_view(bid, doc)
+        lev09 = next((d for d in leveled.divisions if d.csi_code == "DIV 09 00 00"), None)
+        assert lev09 is not None
 
 
 # ---------------------------------------------------------------------------

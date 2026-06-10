@@ -33,7 +33,7 @@ from src.models import (
     InputType,
     LineItem,
 )
-from src.normalize import compute_cross_bid_stats, normalize_bid
+from src.normalize import build_normalized_view, compute_cross_bid_stats, normalize_bid
 from src.run_config import RunInputs
 from src.write_matrix import write_matrix
 
@@ -299,7 +299,7 @@ class TestGS5MixedFormat:
 # ---------------------------------------------------------------------------
 
 class TestGS6KnownFirmReclass:
-    def test_robmar_reclass_fires(self):
+    def test_robmar_reclass_recommended_mirror_and_applied_leveled(self):
         doc = _doc("Robmar Construction", [
             _div("DIV 13 00 00", "Special Construction", cost=CostStructure.ITEMIZED,
                  items=[LineItem(description="Flooring (Labor) — install", amount=Decimal("18000"))],
@@ -313,14 +313,27 @@ class TestGS6KnownFirmReclass:
         ft = _flag_types(bid)
         assert ft.count("KNOWN_FIRM_RECLASSIFIED") == 2
         assert "KNOWN_FIRM_AMBIGUOUS" not in ft
+        assert len(bid.reclass_recommendations) == 2
 
-        div09 = next(d for d in bid.divisions if d.csi_code == "DIV 09 00 00")
-        div01 = next(d for d in bid.divisions if d.csi_code == "DIV 01 00 00")
-        assert any("flooring" in lbl.lower() for lbl in div09.line_item_cells)
-        assert any("dumpster" in lbl.lower() for lbl in div01.line_item_cells)
+        # MIRROR: dollars stay where submitted (foots to bid).
+        m13 = next(d for d in bid.divisions if d.csi_code == "DIV 13 00 00")
+        m11 = next(d for d in bid.divisions if d.csi_code == "DIV 11 00 00")
+        assert any("flooring" in lbl.lower() for lbl in m13.line_item_cells)
+        assert any("dumpster" in lbl.lower() for lbl in m11.line_item_cells)
+
+        # The reframed flag points at the FROM division on the mirror.
+        recl = [f for f in bid.summary_flags if f.flag_type == "KNOWN_FIRM_RECLASSIFIED"]
+        assert {f.division_csi for f in recl} == {"DIV 13 00 00", "DIV 11 00 00"}
+
+        # LEVELED: the moves are applied.
+        leveled = build_normalized_view(bid, doc)
+        l09 = next(d for d in leveled.divisions if d.csi_code == "DIV 09 00 00")
+        l01 = next(d for d in leveled.divisions if d.csi_code == "DIV 01 00 00")
+        assert any("flooring" in lbl.lower() for lbl in l09.line_item_cells)
+        assert any("dumpster" in lbl.lower() for lbl in l01.line_item_cells)
 
     def test_gs3_gs6_contrast(self):
-        """Same DIV 13 flooring line — unknown firm NOT moved, Robmar moved."""
+        """Same DIV 13 flooring line — unknown firm: no recommendation; Robmar: recommended."""
         line = [LineItem(description="Flooring (Labor)", amount=Decimal("18000"))]
         unknown = normalize_bid(_doc("Stranger LLC", [
             _div("DIV 13 00 00", "Special Construction", items=line,
@@ -332,7 +345,9 @@ class TestGS6KnownFirmReclass:
         ]))
         unk13 = next(d for d in unknown.divisions if d.csi_code == "DIV 13 00 00")
         assert any("flooring" in lbl.lower() for lbl in unk13.line_item_cells)
+        assert unknown.reclass_recommendations == []
         assert "KNOWN_FIRM_RECLASSIFIED" in _flag_types(known)
+        assert len(known.reclass_recommendations) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -381,8 +396,8 @@ class TestC4AuditSheetContract:
             wb = openpyxl.load_workbook(out)
             assert "AUDIT" in wb.sheetnames
             ws = wb["AUDIT"]
-            # Column B holds the AuditCode (per _write_audit_sheet header order).
-            codes_on_sheet = {ws.cell(row=r, column=2).value
+            # Column C holds the AuditCode (Option C inserts a View col at B).
+            codes_on_sheet = {ws.cell(row=r, column=3).value
                               for r in range(5, ws.max_row + 1)}
         return codes_on_sheet, items
 

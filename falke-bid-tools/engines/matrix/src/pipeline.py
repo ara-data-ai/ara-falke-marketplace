@@ -19,8 +19,15 @@ Usage (run as a module from the bundled engine root):
     --sf-basis       OPTIONAL. Explicit $/SF denominator (overrides config/extract).
     --sf-confirmed   OPTIONAL. Accept the extracted/config GSF as the SF basis.
 
-The run HARD-STOPS (exit 2) without a confirmed SF basis — the $/SF denominator
-is a fiduciary decision, never silently guessed (scoping §1.3/§1.4, M2).
+Exit-code contract:
+    0 — clean: the matrix was written and tied out with zero failures.
+    2 — SF-basis gate: a confirmed $/SF denominator was not supplied (a missing
+        required input — a fiduciary decision, never silently guessed; scoping
+        §1.3/§1.4, M2). The file is NOT written.
+    3 — delivered with verification failures: Stage 6b found ≥1 post-write
+        tie-out failure. The file IS delivered but LOUD-QUARANTINED (RED banner +
+        cell marks + AUDIT flag); each flagged figure must be verified against the
+        source bid (STAGE6B-QUARANTINE-DISCLOSURE-SPEC.md).
 
 Pipeline stages:
     1. Glob all *.json from the interim dir
@@ -48,10 +55,11 @@ sys.path.insert(0, str(_REPO_ROOT))
 from src.audit import audit_bids
 from src.config_errors import MatrixConfigError
 from src.models import BidDocument
-from src.normalize import compute_cross_bid_stats, normalize_bid
+from src.normalize import build_normalized_view, compute_cross_bid_stats, normalize_bid
 from src.normalized_models import NormalizedBid
+from src.reconcile import reconcile_written_matrix
 from src.run_config import SF_GATE_STOP, RunInputs, load_run_config, resolve_sf_basis
-from src.write_matrix import write_matrix
+from src.write_matrix import apply_quarantine, write_matrix
 
 # ---------------------------------------------------------------------------
 # Skip predicates
@@ -205,26 +213,34 @@ def run_pipeline(
           f"{run.sf_basis_label or 'SF'} ({source})")
     print()
 
-    # --- Stage 4: Normalize each bid ---
-    print("Stage 4: Normalizing bids ...")
-    normalized_bids: list[NormalizedBid] = []
+    # --- Stage 4: Normalize each bid (faithful mirror, Option C §1) ---
+    # normalize_bid no longer moves reclass dollars — it builds the as-submitted
+    # mirror and attaches reclass_recommendations. build_normalized_view then
+    # produces the leveled (moved-dollar) view for cross-bid math and the
+    # Leveled_Normalized sheet (§3).
+    print("Stage 4: Normalizing bids (faithful mirror) ...")
+    mirror_bids: list[NormalizedBid] = []
+    leveled_bids: list[NormalizedBid] = []
     for doc in valid_docs:
         print(f"  normalize_bid({doc.contractor_name!r})")
         try:
-            norm = normalize_bid(doc)
-            normalized_bids.append(norm)
-            if norm.normalization_warnings:
-                for w in norm.normalization_warnings:
+            mirror = normalize_bid(doc)
+            mirror_bids.append(mirror)
+            leveled_bids.append(build_normalized_view(mirror, doc))
+            if mirror.normalization_warnings:
+                for w in mirror.normalization_warnings:
                     print(f"    [WARN] {w}")
         except Exception as e:
             print(f"  ERROR normalizing {doc.contractor_name!r}: {e}")
             validation_errors.append((doc.contractor_name, f"normalize_bid error: {e}"))
     print()
 
-    # --- Stage 5: Cross-bid stats ---
-    print("Stage 5: Computing cross-bid statistics ...")
-    normalized_bids = compute_cross_bid_stats(normalized_bids)
-    for bid in normalized_bids:
+    # --- Stage 5: Cross-bid stats on the LEVELED buckets (§4) ---
+    # Cross-bid statistics are only honest on the normalized buckets, so they
+    # compute against the leveled bids; the mirror keeps each bid's own numbers.
+    print("Stage 5: Computing cross-bid statistics (leveled buckets) ...")
+    leveled_bids = compute_cross_bid_stats(leveled_bids)
+    for bid in leveled_bids:
         pct = bid.footer.gc_fee_pct
         pct_str = f"{pct:.1f}%" if pct is not None else "N/A"
         print(f"  {bid.contractor_name}: gc_fee_pct={pct_str}, "
@@ -232,9 +248,10 @@ def run_pipeline(
               f"summary_flags={len(bid.summary_flags)}")
     print()
 
-    # --- Stage 5b: Audit ---
+    # --- Stage 5b: Audit on the leveled buckets (cross-bid signals tagged leveled) ---
     print("Stage 5b: Running extraction & normalization audit ...")
-    audit_items = audit_bids(normalized_bids)
+    audit_items = audit_bids(leveled_bids)
+    normalized_bids = mirror_bids
     red_count    = sum(1 for a in audit_items if a.status.value == "RED")
     yellow_count = sum(1 for a in audit_items if a.status.value == "YELLOW")
     green_count  = sum(1 for a in audit_items if a.status.value == "GREEN")
@@ -248,7 +265,54 @@ def run_pipeline(
         output_path=out_path,
         run=run,
         audit_items=audit_items,
+        leveled_bids=leveled_bids,
     )
+    print()
+
+    # --- Stage 6b: Post-write reconciliation (closed-loop tie-out) ---
+    # Read the just-saved .xlsx back and assert the four tie-out invariants. A
+    # tie-out failure means the ENGINE's own rendering is defective (a validated
+    # number landed in the wrong cell) — it is NOT a finding about a contractor's
+    # bid. Per Derick's decision (Marvin's STAGE6B-QUARANTINE-DISCLOSURE-SPEC.md),
+    # Stage 6b NO LONGER hard-stops. Instead it LOUD-QUARANTINES: the file IS
+    # delivered, but every affected figure is flagged with a RED banner on the
+    # board-facing Bid_Form + Leveled_Normalized sheets, a RED cell mark + verify
+    # comment, and a RED AUDIT row + QUARANTINE summary line. The run then exits
+    # with a DISTINCT code 3 ("delivered with verification failures") so it is
+    # never mistaken for a clean exit 0. The SF-basis gate above keeps exit 2 (a
+    # missing-required-input hard-stop, a different case).
+    print("Stage 6b: Reconciling the written matrix (post-write tie-out) ...")
+    tieout_failures = reconcile_written_matrix(
+        output_path=out_path,
+        bids=normalized_bids,
+        audit_item_count=len(audit_items),
+        leveled_bids=leveled_bids,
+    )
+    if tieout_failures:
+        print(f"  POST-WRITE TIE-OUT FAILED — {len(tieout_failures)} mismatch(es):")
+        for f in tieout_failures:
+            loc = f" [{f.division_csi}]" if f.division_csi else ""
+            print(f"    RED {f.code.value} | {f.contractor_name}{loc}: {f.message}")
+        print()
+        # LOUD QUARANTINE: deliver the file with the defect flagged (banner + cell
+        # marks + AUDIT line), then exit 3. We do NOT refuse to deliver.
+        rendered_n = apply_quarantine(
+            output_path=out_path,
+            failures=tieout_failures,
+            bids=normalized_bids,
+            leveled_bids=leveled_bids,
+        )
+        count_phrase = (
+            "one or more" if rendered_n < 0 else str(rendered_n)
+        )
+        plural = "" if rendered_n == 1 else "S"
+        print(f"DELIVERED WITH {count_phrase} VERIFICATION FAILURE{plural} "
+              f"(exit 3) — flagged on the Bid_Form banner + AUDIT tab. The file "
+              f"WAS delivered; verify each flagged figure against the source bid "
+              f"before relying on it for an award.")
+        sys.exit(3)
+    print(f"  Tie-out OK: grand totals, footer arithmetic, division subtotals, "
+          f"and audit-row count all reconcile (within ${1}).")
     print()
 
     # --- Stage 7: Summary report ---

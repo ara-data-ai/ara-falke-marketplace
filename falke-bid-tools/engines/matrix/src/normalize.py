@@ -57,6 +57,7 @@ from src.normalized_models import (
     NormalizedBid,
     NormalizedDivision,
     NormalizedFooter,
+    ReclassRecommendation,
 )
 
 
@@ -357,20 +358,110 @@ def _emit_split_unmatched(
 # Rule 3 — Known-firm reclassifications (config-driven; opt-in per matched firm)
 # ---------------------------------------------------------------------------
 
-def _apply_known_firm_reclassifications(
+def _div_short(csi_code: str) -> str:
+    """Render the bare `DIV NN` form for marker/flag readability (drop ` 00 00`).
+
+    `DIV 01 00 00` → `DIV 01`. Pass through anything that doesn't match the
+    canonical pattern (e.g. an UNMAPPED sentinel) unchanged.
+    """
+    parts = csi_code.split()
+    if len(parts) >= 2 and parts[0] == "DIV":
+        return f"DIV {parts[1]}"
+    return csi_code
+
+
+def _detect_known_firm_reclassifications(
     divisions: list[DivisionBid],
     firm: Firm,
     warnings: list[str],
     summary_flags: list[BidSummaryFlag],
-) -> list[DivisionBid]:
-    """Apply a positively-matched known firm's reclass rules (Marvin §4).
+) -> list[ReclassRecommendation]:
+    """Detect a matched firm's reclass rules WITHOUT moving dollars (Option C §1).
 
-    Destructive (moves dollars between divisions) — only ever called for an
-    unambiguously matched firm. Each fired rule emits YELLOW KNOWN_FIRM_RECLASSIFIED.
+    ANNOTATE-ONLY: the dollars stay where the contractor submitted them on the
+    mirror. For each fired rule this records a ReclassRecommendation and emits a
+    reframed YELLOW KNOWN_FIRM_RECLASSIFIED flag (§5) keyed to the FROM division
+    (where the dollars actually sit on the mirror). The dollar move happens only
+    in build_normalized_view (§3). Only ever called for an unambiguous match.
     """
     def _matches(rule: Reclassification, description: str) -> bool:
         desc = description.lower()
         return all(kw.lower() in desc for kw in rule.when_description_contains_all)
+
+    div_items: dict[str, list[LineItem]] = {
+        div.csi_code: list(div.line_items) for div in divisions
+    }
+
+    recommendations: list[ReclassRecommendation] = []
+    for rule in firm.reclassifications:
+        from_code, to_code = rule.from_division, rule.to_division
+        if from_code not in div_items:
+            continue
+
+        moving = [
+            item for item in div_items[from_code] if _matches(rule, item.description)
+        ]
+        if not moving:
+            continue
+
+        canonical = get_canonical_division(to_code)
+        to_name = canonical["division_name"] if canonical else to_code
+        from_canonical = get_canonical_division(from_code)
+        from_name = from_canonical["division_name"] if from_canonical else from_code
+        from_short, to_short = _div_short(from_code), _div_short(to_code)
+
+        for item in moving:
+            warnings.append(
+                f"{firm.firm_id}: '{item.description}' recommended reclass "
+                f"{from_code} → {to_code} (rule {rule.rule_id}); shown in place on "
+                f"Bid_Form, applied in Leveled_Normalized"
+            )
+            recommendations.append(ReclassRecommendation(
+                line_item_desc=item.description,
+                from_division=from_code,
+                to_division=to_code,
+                to_division_name=to_name,
+                amount=item.amount,
+                rule_id=rule.rule_id,
+            ))
+            summary_flags.append(BidSummaryFlag(
+                flag_type="KNOWN_FIRM_RECLASSIFIED",
+                severity="warning",
+                division_csi=from_code,
+                line_item_desc=item.description,
+                value=f"{from_code} → {to_code}",
+                message=(
+                    f"Bidder is known to file '{item.description}' under division "
+                    f"{from_short} ({from_name}); the estimator recommends normalizing "
+                    f"it to {to_short} ({to_name}). It is shown IN PLACE on the Bid_Form "
+                    f"(so the Bid_Form matches the submitted bid) and is applied in the "
+                    f"Leveled_Normalized view used for apples-to-apples comparison."
+                ),
+            ))
+
+    return recommendations
+
+
+def _apply_reclass_moves(
+    divisions: list[DivisionBid],
+    recommendations: list[ReclassRecommendation],
+) -> list[DivisionBid]:
+    """Apply recommended reclass moves to a DivisionBid list (leveled view, §3).
+
+    Relocates each recommended line item from its `from_division` into its
+    `to_division`, re-derives the affected division subtotals, and creates the
+    target division if it does not yet exist. Grand totals are unchanged (the
+    move is between divisions). This is the destructive half that §1 split out
+    of normalization — it runs ONLY for the leveled view.
+    """
+    if not recommendations:
+        return list(divisions)
+
+    # Map each recommended (from_division, line_item_desc) to its target.
+    move_targets: dict[tuple[str, str], str] = {
+        (rec.from_division, rec.line_item_desc): rec.to_division
+        for rec in recommendations
+    }
 
     div_items: dict[str, list[LineItem]] = {}
     div_meta: dict[str, DivisionBid] = {}
@@ -378,41 +469,17 @@ def _apply_known_firm_reclassifications(
         div_items[div.csi_code] = list(div.line_items)
         div_meta[div.csi_code] = div
 
-    for rule in firm.reclassifications:
-        from_code, to_code = rule.from_division, rule.to_division
+    for (from_code, desc), to_code in move_targets.items():
         if from_code not in div_items:
             continue
-
         staying: list[LineItem] = []
         moving: list[LineItem] = []
         for item in div_items[from_code]:
-            (moving if _matches(rule, item.description) else staying).append(item)
-
+            (moving if item.description == desc else staying).append(item)
         if not moving:
             continue
-
-        for item in moving:
-            warnings.append(
-                f"{firm.firm_id}: '{item.description}' reclassified "
-                f"{from_code} → {to_code} (rule {rule.rule_id})"
-            )
-            summary_flags.append(BidSummaryFlag(
-                flag_type="KNOWN_FIRM_RECLASSIFIED",
-                severity="warning",
-                division_csi=to_code,
-                line_item_desc=item.description,
-                value=f"{from_code} → {to_code}",
-                message=(
-                    f"Bidder is known to file '{item.description}' under division "
-                    f"{from_code}; it was moved to its correct division {to_code} to "
-                    f"compare like-for-like. Original placement preserved in the audit "
-                    f"trail."
-                ),
-            ))
-
         div_items[from_code] = staying
         div_items.setdefault(to_code, []).extend(moving)
-
         if to_code not in div_meta:
             canonical = get_canonical_division(to_code)
             div_meta[to_code] = DivisionBid(
@@ -424,32 +491,29 @@ def _apply_known_firm_reclassifications(
                 division_subtotal=None,
             )
 
+    def _derive_subtotal(div: DivisionBid, items: list[LineItem]) -> Optional[Decimal]:
+        if div.cost_structure == CostStructure.LUMP_SUM:
+            return div.division_subtotal
+        return sum(
+            (i.amount or Decimal("0")) for i in items
+            if not i.is_by_owner_others and not i.is_excluded and not i.is_allowance
+        ) or None
+
     result: list[DivisionBid] = []
     for div in divisions:
         items = div_items.get(div.csi_code, [])
-        if div.cost_structure != CostStructure.LUMP_SUM:
-            subtotal = sum(
-                (i.amount or Decimal("0")) for i in items
-                if not i.is_by_owner_others and not i.is_excluded and not i.is_allowance
-            ) or None
-        else:
-            subtotal = div.division_subtotal
         result.append(div.model_copy(update={
             "line_items": items,
-            "division_subtotal": subtotal,
+            "division_subtotal": _derive_subtotal(div, items),
         }))
 
     existing_codes = {d.csi_code for d in divisions}
     for code, meta in div_meta.items():
         if code not in existing_codes:
             items = div_items.get(code, [])
-            subtotal = sum(
-                (i.amount or Decimal("0")) for i in items
-                if not i.is_by_owner_others and not i.is_excluded and not i.is_allowance
-            ) or None
             result.append(meta.model_copy(update={
                 "line_items": items,
-                "division_subtotal": subtotal,
+                "division_subtotal": _derive_subtotal(meta, items),
                 "classification_source": ClassificationSource.PIPELINE_REMAPPED,
                 "contractor_native_code": meta.contractor_native_code or code,
             }))
@@ -609,11 +673,24 @@ def compute_cross_bid_stats(bids: list[NormalizedBid]) -> list[NormalizedBid]:
                         severity="warning",
                     ))
 
+        # Phantom-gap fix (Option C §6): a division emptied by a reclassification
+        # for THIS bidder must never raise SCOPE_GAP_IMPLICIT — the scope did not
+        # vanish, it moved into another division. Suppression is keyed to the
+        # `from_division` of this bid's own reclass recommendations (surgical: a
+        # different bidder who genuinely left the division blank still flags).
+        vacated_by_reclass = {
+            rec.from_division for rec in bid.reclass_recommendations
+        }
+
         # Implicit gap counting using field medians
         implicit_gap_count = 0
         updated_divisions: list["NormalizedDivision"] = []
         for div in bid.divisions:
             updated_cells = dict(div.line_item_cells)
+            if div.csi_code in vacated_by_reclass:
+                # Reclass-driven blank — not a scope gap. Leave the division as-is.
+                updated_divisions.append(div)
+                continue
             if div.subtotal_cell.state == CellState.NULL_BLANK:
                 median = field_medians.get(div.csi_code, Decimal("0"))
                 if median > SCOPE_GAP_MEDIAN_THRESHOLD:
@@ -781,6 +858,8 @@ def _build_normalized_footer(
     gc_fee_cell = _money_cell(f.gc_fee)
     gl_cell = _money_cell(f.general_liability_insurance)
     br_cell = _money_cell(f.builders_risk_insurance)
+    ohp_cell = _money_cell(f.overhead_and_profit)
+    other_fees_cell = _money_cell(f.other_fees_subtotal)
     grand_total_cell = _money_cell(f.grand_total)
     bond_cell = _money_cell(f.bond)
 
@@ -789,6 +868,8 @@ def _build_normalized_footer(
         general_liability_insurance=gl_cell,
         builders_risk_insurance=br_cell,
         gc_fee=gc_fee_cell,
+        overhead_and_profit=ohp_cell,
+        other_fees_subtotal=other_fees_cell,
         grand_total=grand_total_cell,
         bond=bond_cell,
         gc_fee_pct=None,  # computed next
@@ -898,10 +979,13 @@ def normalize_bid(
                 f"must confirm which firm this is before relying on the comparison."
             ),
         ))
-    elif match.firm is not None:
-        # Reclassifications are destructive — only for an unambiguous match.
+    reclass_recommendations: list[ReclassRecommendation] = []
+    if match.firm is not None:
+        # Option C §1: reclassification is ANNOTATE-ONLY on the mirror. Detect the
+        # matched lines + recommended targets WITHOUT moving dollars; the move runs
+        # only in build_normalized_view (the leveled view).
         if match.firm.reclassifications:
-            divisions = _apply_known_firm_reclassifications(
+            reclass_recommendations = _detect_known_firm_reclassifications(
                 divisions, match.firm, normalization_warnings, summary_flags
             )
 
@@ -967,12 +1051,74 @@ def normalize_bid(
         extraction_warnings=list(doc.extraction_warnings),
         normalization_warnings=normalization_warnings,
         summary_flags=summary_flags,  # remap/reclass/unrecognized/ambiguous/unmatched
+        reclass_recommendations=reclass_recommendations,
     )
 
     # Rule 4: Allowance treatment (post-division assembly)
     bid = _apply_allowance_treatment(bid)
 
     return bid
+
+
+# ---------------------------------------------------------------------------
+# Leveled / normalized view builder (Option C §3)
+# ---------------------------------------------------------------------------
+
+def build_normalized_view(mirror: NormalizedBid, doc: BidDocument) -> NormalizedBid:
+    """Build the leveled (moved-dollar) view from a faithful-mirror bid (Option C §3).
+
+    Takes the as-submitted mirror NormalizedBid plus its source BidDocument and
+    returns a second NormalizedBid in which the known-firm reclassifications ARE
+    applied (dollars moved between divisions). Grand totals are identical to the
+    mirror (the move never changes a bidder's total). All non-reclass
+    normalization (code-format remap, cell-state, allowance) is reproduced from
+    the same source so the leveled view is the fully-normalized one.
+
+    Named `build_normalized_view` (not `leveled_*`) to avoid colliding with the
+    footer's hard-cost ``leveled_total`` field (spec §9).
+    """
+    if not mirror.reclass_recommendations:
+        # No reclass to apply — the leveled view equals the mirror.
+        return mirror.model_copy(deep=True)
+
+    warnings: list[str] = list(doc.extraction_warnings)
+    summary_flags = list(mirror.summary_flags)
+
+    # Re-derive the as-submitted/remapped DivisionBid list, then apply the moves.
+    divisions: list[DivisionBid] = list(doc.divisions)
+    codes = _bid_division_codes(doc)
+    if detect_csi_1995_2digit(codes):
+        remapped: list[DivisionBid] = []
+        throwaway_flags: list[BidSummaryFlag] = []
+        for div in divisions:
+            remapped.extend(
+                _apply_code_format_remap(div, warnings, throwaway_flags)
+            )
+        divisions = remapped
+    divisions = _apply_reclass_moves(divisions, mirror.reclass_recommendations)
+
+    normalized_divs: list[NormalizedDivision] = []
+    explicit_exclusion_count = 0
+    for div in divisions:
+        norm_div = _normalize_division(div, warnings)
+        for cell in norm_div.line_item_cells.values():
+            if cell.state == CellState.EXCLUDED:
+                explicit_exclusion_count += 1
+        normalized_divs.append(norm_div)
+
+    footer = _build_normalized_footer(doc, warnings, divisions)
+
+    # Allowance totals are unchanged by an inter-division move, so the mirror's
+    # allowance accounting (and its ALLOWANCE_PRESENT flag) carry over as-is — do
+    # NOT re-run _apply_allowance_treatment or the flag would be duplicated.
+    leveled = mirror.model_copy(update={
+        "divisions": normalized_divs,
+        "footer": footer,
+        "explicit_exclusion_count": explicit_exclusion_count,
+        "implicit_gap_count": 0,  # set by compute_cross_bid_stats on the leveled set
+        "summary_flags": summary_flags,
+    })
+    return leveled
 
 
 # ---------------------------------------------------------------------------
