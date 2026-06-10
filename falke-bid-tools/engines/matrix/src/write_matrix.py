@@ -34,6 +34,7 @@ Layout:
 from __future__ import annotations
 
 from decimal import Decimal
+from math import ceil
 from pathlib import Path
 from typing import Optional
 
@@ -1022,6 +1023,27 @@ _GRAND_TOTAL_COMPONENT_KEYS = (
 )
 
 
+def _used_width_chars(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+    used_width: int,
+) -> float:
+    """Approximate the character capacity of one wrapped line across the merged
+    banner (sum of the set column widths from A through ``used_width``).
+
+    openpyxl column width is roughly in characters of the default font, so the
+    sum is a usable estimate of how many characters fit on one line of the
+    full-width merged banner — used to size the row height so the text shows
+    horizontally instead of stacking in column A.
+    """
+    from openpyxl.utils import get_column_letter
+
+    total = 0.0
+    for col in range(1, used_width + 1):
+        dim = ws.column_dimensions.get(get_column_letter(col))
+        total += (dim.width if dim is not None and dim.width else 8.43)
+    return total
+
+
 def _write_quarantine_banner(
     ws: openpyxl.worksheet.worksheet.Worksheet,
     num_contractors: int,
@@ -1030,11 +1052,19 @@ def _write_quarantine_banner(
 ) -> None:
     """Write the RED 3-row quarantine banner into ``start_row .. start_row+2``.
 
-    Solid RED across the used column width, Line 1 bold. Overrides whatever is in
+    Each banner row is MERGED across the full used width (col A → last contractor
+    column) so the long L2/L3 paragraphs flow HORIZONTALLY as a proper full-width
+    banner instead of stacking into a tall, narrow column-A block. Each merged row
+    gets ``wrap_text`` + an explicit row height sized to the text so it is fully
+    visible. Solid RED across the used width, Line 1 bold. Overrides whatever is in
     those rows (title/details on Bid_Form; the writer leaves rows 1–3 for it on
     Leveled_Normalized). Does not shift data rows.
     """
+    from openpyxl.utils import get_column_letter
+
     used_width = _col_start(max(num_contractors - 1, 0)) + 2
+    last_col = get_column_letter(used_width)
+    line_chars = _used_width_chars(ws, used_width)
     lines = [
         (_QUARANTINE_BANNER_LINE_1, True),
         (_quarantine_banner_line_2(n), False),
@@ -1045,9 +1075,17 @@ def _write_quarantine_banner(
         c = ws.cell(row=row, column=1)
         c.value = text
         c.font = Font(bold=weight_bold)
-        c.alignment = Alignment(wrap_text=True)
+        c.alignment = Alignment(wrap_text=True, vertical="top")
+        # RED across the used width FIRST so every underlying cell is filled even
+        # before the merge collapses them visually.
         for col in range(1, used_width + 1):
             ws.cell(row=row, column=col).fill = RED_FILL
+        # MERGE the row across the full used width so the text flows horizontally.
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=used_width)
+        # Explicit row height: estimate wrapped-line count from the text length vs
+        # the merged width's character capacity, ~15 pts per line (default font).
+        est_lines = max(1, ceil(len(text) / max(line_chars, 1.0)))
+        ws.row_dimensions[row].height = est_lines * 15.0
 
 
 def _mark_cell(ws, row: int, col: int, written: str, expected: str,

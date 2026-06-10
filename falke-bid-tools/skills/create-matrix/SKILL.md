@@ -497,7 +497,37 @@ This notice is informational and does not block the run.
 ## Step 3 — Normalization, audit, and matrix write (with the SF-basis gate)
 
 First **ask the user where to save** the comparison Excel (`--out`); do not
-assume a path.
+assume a path. The user chooses the **folder**; YOU construct the **filename**
+per the rule below.
+
+### Output filename construction (REQUIRED — do this exactly)
+
+The `--out` filename is built from the confirmed project identity, NOT
+free-formed. Follow this rule literally:
+
+1. Base name is always: `{project_name} - Bid Comparison Matrix`.
+2. **If `rfp_label` was provided** in Step 1.5 (non-empty), append it:
+   `{project_name} - Bid Comparison Matrix - {rfp_label}`. **If no `rfp_label`
+   was given, omit the suffix entirely** — use the base name unchanged.
+3. **Sanitize** the whole filename for filesystem-illegal characters: replace
+   each of `/ \ : * ? " < > |` with a space, collapse any run of multiple
+   spaces into one, and strip leading/trailing spaces. Apply this to the
+   assembled name (project_name and rfp_label both get sanitized this way).
+4. Append `.xlsx`.
+
+This applies to both the matrix output here and any companion artifact you name
+for this run — the RFP label is part of the run's identity, so it belongs in the
+filename whenever the user supplied one.
+
+**Worked examples:**
+
+- `project_name="Seaside Terrace Condominium"`, `rfp_label="RFP Feb-2026 Rev 3"`
+  → `Seaside Terrace Condominium - Bid Comparison Matrix - RFP Feb-2026 Rev 3.xlsx`
+- `project_name="Harbor View Tower"`, no `rfp_label`
+  → `Harbor View Tower - Bid Comparison Matrix.xlsx`
+- `rfp_label="RFP 2/2026: Rev 3"` (illegal `:` and `/`)
+  → sanitized to `RFP 2 2026 Rev 3`, giving
+  `... - Bid Comparison Matrix - RFP 2 2026 Rev 3.xlsx`
 
 ### The SF-basis confirmation gate (REQUIRED — mirrors the scorecard skill)
 
@@ -528,8 +558,13 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/engines/matrix" \
   --interim-dir "$INTERIM_DIR" \
   --project-config "$PROJECT_CONFIG" \
   --sf-confirmed \
-  --out "<user-chosen output dir>/<Project> - Bid Comparison Matrix.xlsx" 2>&1
+  --out "<user-chosen output dir>/<filename from the rule above>" 2>&1
 ```
+
+The `--out` filename MUST be the one you constructed via the *Output filename
+construction* rule above — i.e. it includes the ` - {rfp_label}` suffix whenever
+`rfp_label` was provided. Do NOT hand the engine a plain
+`<Project> - Bid Comparison Matrix.xlsx` when an RFP label exists.
 
 Swap `--sf-confirmed` for `--sf-basis <value>` when the user overrides the
 denominator. Capture the full stdout. The pipeline runs these stages:
