@@ -225,14 +225,51 @@ Either way the gate in Step 3 is what makes the SF basis authoritative.
 
 ---
 
-## Step 2 — Extraction (one agent per PDF, run in parallel)
+## Step 2 — Extraction (one agent per PDF, in capped-concurrency waves)
 
 For each PDF in the confirmed list, spawn one extraction agent with the brief
-below. Run these **in parallel** — use Claude's parallel subagent capability.
-Do NOT process PDFs sequentially if the platform supports parallelism.
+below. Each agent writes one JSON file to INTERIM_DIR. An agent that finds a
+blank template writes a skip sentinel instead of a full BidDocument.
 
-Each agent writes one JSON file to INTERIM_DIR. An agent that finds a blank
-template writes a skip sentinel instead of a full BidDocument.
+### Wave the agents — never fire them all at once
+
+Process the PDFs in **waves of at most K concurrent extraction agents** — never
+all at once. Default **K = 4**; reduce for larger sets (**K = 3 for 9–16 PDFs,
+K = 2 for >16 PDFs**) — the larger the bid set, the smaller the wave, because a
+large simultaneous burst of extraction agents is what trips Anthropic
+capacity-overload (`529 overloaded_error`) / rate-limit (`429 rate_limit_error`)
+errors. Within a wave, run the agents **in parallel** (Claude's parallel
+subagent capability); start the next wave only after **every** agent in the
+current wave has completed — success, skip, or exhausted retries.
+
+### Resume, don't restart
+
+Before each wave, **skip any PDF whose `{slug}.json` already exists in
+INTERIM_DIR from this run** — re-extract only the misses. Resume is driven by
+**your own recorded per-agent outcome (success / skip / miss) from this run**,
+which you track directly; the existence of `{slug}.json` in INTERIM_DIR is the
+backing artifact that confirms a success — you do not pre-compute slugs for
+un-extracted PDFs (the slug is derived inside the extraction agent, so it isn't
+known until after that PDF is extracted). A large run must never restart from
+zero after a transient overload. (This in-run resume is distinct from the
+cross-run overwrite behavior in Step 5 note 6: within a single run, skip what
+already succeeded; across separate runs, extract fresh.)
+
+### Retry on overload (REQUIRED)
+
+If an extraction agent fails with an overload / capacity error
+(`529 overloaded_error`) or a rate-limit error (`429 rate_limit_error`), wait
+and **retry that single agent**: exponential backoff starting ~2s and doubling
+(2s → 4s → 8s), each delay offset by **±30% random jitter** (jitter is required
+— synchronized retries make the overload worse), honoring any `retry-after` the
+error provides. **Max 4 attempts per agent.**
+
+If an agent still fails after 4 attempts, **do not fail the whole run** — record
+the miss, finish the other agents in the wave, then surface the un-extracted
+PDFs clearly to the user (see *After all agents complete*) and offer to retry
+them **sequentially** (one at a time). If a whole wave overloads despite
+retries, **drop to sequential** (one agent at a time) for the remainder of the
+set.
 
 ### Extraction agent brief (embed verbatim in each agent invocation)
 
@@ -449,11 +486,24 @@ Report:
 Review each agent's report. Note:
 - Any agent that returned an error (failed to write JSON) → surface to the user
   before proceeding. Do not run the pipeline with a missing bid.
+- Any PDF that exhausted its 4 retry attempts (Step 2 retry-on-overload) and was
+  recorded as a miss → list every such un-extracted PDF by name and **offer to
+  retry just the misses sequentially** (one agent at a time, which avoids the
+  burst that caused the overload). Re-extracting only the misses is the resume
+  path — successfully extracted bids are not re-run.
 - Any agent that wrote a skip sentinel → confirm the reason makes sense.
 - If extraction_confidence is LOW for any contractor → flag for post-pipeline
   manual review.
 - Use the extracted `project_name` / `project_address` / `total_gsf` to
   pre-fill the identity confirmation in Step 1.5 (if you deferred it).
+
+**Hard stop on any un-extracted bid (REQUIRED — do not weaken).** If ANY bid is
+still missing its JSON after retries — whether from an error or from exhausting
+the 4 attempts — **do NOT proceed to the pipeline / matrix.** Stop and make the
+user choose: retry the misses (sequentially, per above) until they extract, or
+**explicitly** accept a partial set that omits the un-extracted bidder(s). A
+silently incomplete matrix drops a bidder from the comparison — never run the
+pipeline with a missing bid on your own initiative.
 
 If all agents succeeded (or gracefully skipped), proceed to Step 2.5.
 
@@ -741,10 +791,16 @@ bootstrapped. The SessionStart hook installs `openpyxl` + `pydantic` + `pyyaml`
 (plus the scorecard deps) into `${CLAUDE_PLUGIN_DATA}/venv` on first run. Re-run
 the session so the bootstrap completes.
 
-**8. Parallel subagent behavior**
-Parallelism in Step 2 depends on the session's support for concurrent tool calls.
-If the environment runs agents sequentially, extraction still works correctly but
-takes longer. No correctness issue — just a throughput note.
+**8. Capped-concurrency extraction (waves)**
+Step 2 runs the extraction agents in **bounded waves** (K = 4, smaller for large
+bid sets), not all at once. This is **intentional reliability engineering**, not
+a throughput compromise: a large simultaneous burst of multimodal extraction
+agents is what trips Anthropic capacity-overload (`529`) / rate-limit (`429`)
+errors, so the wave cap, the jittered retry/backoff, and the sequential-degrade
+path are what let a large bid set finish reliably. A bigger set extracts in more
+waves and therefore takes longer — that bounded pace is the point, and it does
+not affect correctness. If the environment runs agents sequentially anyway,
+extraction still works correctly; it just takes longer.
 
 ---
 

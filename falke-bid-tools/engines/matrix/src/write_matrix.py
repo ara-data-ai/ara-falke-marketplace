@@ -44,6 +44,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from src.audit import AuditItem, AuditStatus
 from src.normalized_models import (
+    GRAND_TOTAL_COMPONENT_KEYS,
     CellState,
     NormalizedBid,
     NormalizedDivision,
@@ -108,9 +109,9 @@ FOOTER_ROWS: list[tuple[str, str]] = [
     ("GC_FEE",                "GC Fee"),
     ("OVERHEAD_PROFIT",       "Overhead & Profit"),
     ("OTHER_FEES",            "Other Fees / Insurance"),
+    ("BOND",                  "Bond"),
     ("FEES_SUBTOTAL",         "Fees Subtotal"),
     ("GRAND_TOTAL",           "GRAND TOTAL"),
-    ("BOND",                  "Bond (Alternate)"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -530,14 +531,12 @@ def _write_footer_rows(
     components = [grand_total_component_amounts(bid.footer) for bid in bids]
 
     # The additive fee components that roll up into FEES_SUBTOTAL (everything
-    # composing the grand total EXCEPT construction). Bond is an alternate, not
-    # part of the base grand total, so it is excluded here.
-    _FEE_COMPONENT_KEYS = (
-        "GL_INSURANCE",
-        "BUILDERS_RISK",
-        "GC_FEE",
-        "OVERHEAD_PROFIT",
-        "OTHER_FEES",
+    # composing the grand total EXCEPT construction). Derived from the single
+    # source of truth (GRAND_TOTAL_COMPONENT_KEYS) minus construction so it can
+    # never drift from grand_total_component_amounts(). Bond is an additive
+    # component of the grand total (Marvin's ruling), so it rolls up here.
+    _FEE_COMPONENT_KEYS = tuple(
+        k for k in GRAND_TOTAL_COMPONENT_KEYS if k != "CONSTRUCTION_SUBTOTAL"
     )
 
     summaries: list[dict] = []
@@ -567,8 +566,6 @@ def _write_footer_rows(
                 )
             elif key == "GRAND_TOTAL":
                 val = _cell_amount(footer.grand_total.state, footer.grand_total.amount)
-            elif key == "BOND":
-                val = _cell_amount(footer.bond.state, footer.bond.amount)
             else:
                 val = 0.0
 
@@ -1064,18 +1061,6 @@ _GT_CELL_MARKERS = (
 )
 _DIV_CELL_MARKER = "Division subtotal tie-out FAILED"
 
-# The footer-component rows that compose the grand total (same set reconcile.py
-# re-sums for check 2). Defined locally to avoid a circular import (reconcile
-# imports from this module). Bond is an alternate, not part of the base total.
-_GRAND_TOTAL_COMPONENT_KEYS = (
-    "CONSTRUCTION_SUBTOTAL",
-    "GL_INSURANCE",
-    "BUILDERS_RISK",
-    "GC_FEE",
-    "OVERHEAD_PROFIT",
-    "OTHER_FEES",
-)
-
 
 def _write_quarantine_banner(
     ws: openpyxl.worksheet.worksheet.Worksheet,
@@ -1144,7 +1129,7 @@ def _mark_failing_cells(
     subtotal_rows = _find_subtotal_label_rows(ws)
     component_rows = {
         key: _find_label_row_col_a(ws, key)
-        for key in _GRAND_TOTAL_COMPONENT_KEYS
+        for key in GRAND_TOTAL_COMPONENT_KEYS
     }
     blessed_by_name = {b.contractor_name: b for b in ordered_bids}
 
@@ -1198,7 +1183,7 @@ def _mark_failing_cells(
             expected = sum(
                 (
                     _as_dec(ws.cell(row=component_rows[key], column=col).value)
-                    for key in _GRAND_TOTAL_COMPONENT_KEYS
+                    for key in GRAND_TOTAL_COMPONENT_KEYS
                     if component_rows.get(key) is not None
                 ),
                 Decimal("0"),

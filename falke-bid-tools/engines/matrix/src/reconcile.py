@@ -53,7 +53,11 @@ import openpyxl
 from openpyxl.utils import get_column_letter
 
 from src.audit import AuditCode, AuditItem, AuditStatus
-from src.normalized_models import CellState, NormalizedBid
+from src.normalized_models import (
+    GRAND_TOTAL_COMPONENT_KEYS,
+    CellState,
+    NormalizedBid,
+)
 from src.write_matrix import (
     DIVISION_ROWS,
     _col_start,
@@ -90,20 +94,16 @@ _BR_KEY = "BUILDERS_RISK"
 _GC_FEE_KEY = "GC_FEE"
 _OHP_KEY = "OVERHEAD_PROFIT"
 _OTHER_FEES_KEY = "OTHER_FEES"
+_BOND_KEY = "BOND"
 
 # Every component row that COMPOSES the grand total (construction + the additive
-# fee/insurance rows). Stage 6b check 2 re-sums these read-back cells and asserts
-# they equal the written GRAND TOTAL — matching write_matrix's rendered footer
-# and audit.py's grand_total composition (Bond is an alternate, not in the base
-# total, so it is excluded here).
-_GRAND_TOTAL_COMPONENT_KEYS = (
-    _CONSTRUCTION_KEY,
-    _GL_KEY,
-    _BR_KEY,
-    _GC_FEE_KEY,
-    _OHP_KEY,
-    _OTHER_FEES_KEY,
-)
+# fee/insurance rows, including Bond). Stage 6b check 2 re-sums these read-back
+# cells and asserts they equal the written GRAND TOTAL. Derived from the SINGLE
+# SOURCE OF TRUTH (normalized_models.GRAND_TOTAL_COMPONENT_KEYS) so this checker,
+# write_matrix's rendered footer, and audit.py's grand_total composition can
+# never drift — Bond is an additive component of the grand total (Marvin's
+# ruling), so it is included.
+_GRAND_TOTAL_COMPONENT_KEYS = GRAND_TOTAL_COMPONENT_KEYS
 
 # Human-readable component names for the missing-row diagnostic.
 _COMPONENT_LABELS = {
@@ -113,6 +113,7 @@ _COMPONENT_LABELS = {
     _GC_FEE_KEY: "GC fee",
     _OHP_KEY: "Overhead & Profit",
     _OTHER_FEES_KEY: "Other Fees",
+    _BOND_KEY: "Bond",
     _GRAND_TOTAL_KEY: "GRAND TOTAL",
 }
 
@@ -276,12 +277,13 @@ def _check_sheet(
 
         # --- Check 2: footer arithmetic re-checked FROM the written cells ---
         # Re-sum EVERY rendered grand-total component (construction + GL +
-        # Builders Risk + GC fee + Overhead & Profit + Other Fees) and assert it
-        # equals the written GRAND TOTAL cell. This composition matches
-        # write_matrix's rendered footer and audit.py's grand_total_component_sum
-        # (single source of truth) — so a firm like PBS that folds insurance into
-        # Other Fees / breaks out Overhead & Profit ties out instead of falsely
-        # failing.
+        # Builders Risk + GC fee + Overhead & Profit + Other Fees + Bond) and
+        # assert it equals the written GRAND TOTAL cell. The component set is the
+        # single source of truth (normalized_models.GRAND_TOTAL_COMPONENT_KEYS),
+        # the same one write_matrix's rendered footer and audit.py's
+        # grand_total_component_sum use — so a firm like PBS that folds insurance
+        # into Other Fees, or a bonded bid whose grand total INCLUDES bond, ties
+        # out instead of falsely failing.
         _missing_components = [
             _COMPONENT_LABELS[comp]
             for comp, frow in component_rows.items()
@@ -316,8 +318,8 @@ def _check_sheet(
                     name,
                     f"[{sheet_name}] Footer arithmetic FAILED in the written sheet: "
                     f"construction subtotal + GL + Builders Risk + GC fee + "
-                    f"Overhead & Profit + Other Fees = {_fmt(summed)} does not equal "
-                    f"the written GRAND TOTAL cell ({_fmt(w_grand)}) — difference "
+                    f"Overhead & Profit + Other Fees + Bond = {_fmt(summed)} does not "
+                    f"equal the written GRAND TOTAL cell ({_fmt(w_grand)}) — difference "
                     f"{_fmt(arith_delta)}. A rendering error broke the footer sum. "
                     f"Delivered with this figure FLAGGED — verify {name}'s GRAND TOTAL "
                     f"and its footer components against the submitted bid before "

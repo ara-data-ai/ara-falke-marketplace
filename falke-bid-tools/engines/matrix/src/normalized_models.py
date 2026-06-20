@@ -289,6 +289,32 @@ def grand_total_component_sum(footer: "NormalizedFooter") -> Decimal:
     return sum(grand_total_component_amounts(footer).values(), Decimal("0"))
 
 
+# The full set of footer keys that CAN compose the grand total, in footer order.
+# This is the single source of truth for "which rows roll up into the grand
+# total" — write_matrix.py (rendered rows + Fees Subtotal) and reconcile.py
+# (Stage 6b re-sum) BOTH derive their component sets from this constant so they
+# can never drift from grand_total_component_amounts() above. OTHER_FEES is
+# listed because its ROW always exists; whether it carries an additive amount for
+# a given bid is decided per-bid by grand_total_component_amounts() (memo → 0).
+# BOND is an additive component of the grand total (Marvin's ruling: bond-inside-
+# the-grand-total is the common bonded-bid presentation), so it belongs here.
+#
+# Known limitation (bond "on top"): a bid that quotes bond OUTSIDE its stated
+# grand total will produce a Stage-6b tie-out RED equal to the bond amount — a
+# conservative, loud flag for human verification; leveling/ranking is unaffected
+# because it keys on the contractor's stated grand_total. Bond add-back/decompose
+# is a deliberately separate future enhancement.
+GRAND_TOTAL_COMPONENT_KEYS: tuple[str, ...] = (
+    "CONSTRUCTION_SUBTOTAL",
+    "GL_INSURANCE",
+    "BUILDERS_RISK",
+    "GC_FEE",
+    "OVERHEAD_PROFIT",
+    "OTHER_FEES",
+    "BOND",
+)
+
+
 # ---------------------------------------------------------------------------
 # Summary flags
 # ---------------------------------------------------------------------------
