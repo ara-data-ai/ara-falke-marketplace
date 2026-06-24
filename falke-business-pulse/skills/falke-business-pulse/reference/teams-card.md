@@ -372,7 +372,8 @@ category's items into its single `wrap` TextBlock using **Adaptive Card markdown
 ## Secret handling (COND-3)
 
 - The webhook URL is a **bearer secret** — anyone with it can post to that channel.
-- Read it from the per-person config / environment (`FALKE_TEAMS_WEBHOOK_URL`).
+- Read it from `~/.falke-business-pulse/config.json` (collected by the skill's
+  first-run setup, Step 0.5).
 - **Never** hard-code it in the skill, write it into the digest, commit it to the
   repo, or place it in the synced Dropbox folder. Rotation: if leaked, the channel
   owner regenerates the Workflows URL.

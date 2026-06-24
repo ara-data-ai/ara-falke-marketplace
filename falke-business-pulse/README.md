@@ -72,21 +72,33 @@ Then the two terminal lines:
 Approve the "Will install" summary (it lists the `apple-mail` MCP server + the
 skill — expected), then `/reload-plugins`. First session shows
 "Setting up dependencies…" for ~30s while the bootstrap hook prepares the mail
-tool. Then: paste the per-person config (below) and grant the one-time macOS
-Automation permission. Full step-by-step is the INSTALL-DESIGN + the
-employee guide Anna/Maggie polish.
+tool. Then: the skill's **first-run setup** asks for the per-person config (below)
+and you grant the one-time macOS Automation permission. Full step-by-step is the
+INSTALL-DESIGN + the employee guide Anna/Maggie polish.
 
 ## Per-person config
+
+Two things vary per person — the **Dropbox project folder** and the (optional)
+**Teams webhook URL**. The skill **collects these on first run** (SKILL.md
+Step 0.5) and saves them to `~/.falke-business-pulse/config.json` in the person's
+home directory (FileVault-protected, outside git and outside the Dropbox folder).
+They are **not** pasted as env vars at install.
 
 | What | Where | Default | Secret? |
 |---|---|---|---|
 | Read account allow-list | `APPLE_MAIL_READ_ALLOWED_ACCOUNTS` (`.mcp.json` env) | `falkecorp.com,falkehoa.com` | no |
 | Recipient allow-list (drafts) | `APPLE_MAIL_DRAFT_ALLOWED_DOMAINS` (`.mcp.json` env) | `falkecorp.com` | no |
 | From-account allow-list (sender) | `APPLE_MAIL_DRAFT_FROM_ACCOUNTS` (`.mcp.json` env) | `falkecorp.com,falkehoa.com` | no |
-| Teams webhook URL | `FALKE_TEAMS_WEBHOOK_URL` (env / keychain) | *(per channel — employee pastes)* | **YES — never commit** |
-| Dropbox project folder | local path the skill reads | `~/Library/CloudStorage/Dropbox/<project>` (Available offline) | no |
+| Dropbox project folder | collected on first run → `~/.falke-business-pulse/config.json` | `~/Library/CloudStorage/Dropbox/<project>` (Available offline) | no |
+| Teams webhook URL (**optional**) | collected on first run → `~/.falke-business-pulse/config.json` | *(per channel — skip to run without the Teams post)* | **YES — never commit** |
 
 The three allow-lists ship with safe Falke defaults in `.mcp.json` and are
-overridden only if a person's case differs. The **Teams webhook URL is a secret**
-and is deliberately NOT in `.mcp.json` — it is read from the environment/keychain
-the employee sets, never baked into the plugin or the repo (COND-3).
+overridden only if a person's case differs. The Dropbox path and Teams webhook are
+**not** env vars — the skill's first-run setup prompts for them and writes them to
+`~/.falke-business-pulse/config.json` (re-runnable anytime via "reconfigure my
+pulse" / "update my Teams webhook"). **Teams is optional:** skip the webhook and
+the pulse runs normally without the Teams post.
+
+The **Teams webhook URL is a secret** and is deliberately NOT in `.mcp.json` and
+NOT in the repo — it lives only in the local `config.json` (outside git, outside
+the Dropbox folder), never baked into the plugin (COND-3).
