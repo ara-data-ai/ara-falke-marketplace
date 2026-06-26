@@ -302,6 +302,52 @@ template only gives them the Falke-branded, scannable layout with WAITING-ON-A-
 CONTACT as the visual headline). The **content/structure is fixed by this skill**;
 the template supplies appearance only and never adds steps or capabilities.
 
+### Step 3.5 — Render the digest as an inline visual artifact
+
+After saving the completed HTML file, render the digest inline in the current
+session. **This is the primary delivery mechanism** — the saved file is a
+backup copy.
+
+Detect the environment and use the matching path:
+
+**Path A — Claude Code** (`mcp__visualize__show_widget` tool is available):
+
+```
+mcp__visualize__show_widget(
+  title = "falke_morning_pulse",
+  loading_messages = ["Reading your morning pulse", "Laying out the digest"],
+  widget_code = <adapted HTML — see below>
+)
+```
+
+**Path B — Cowork** (`mcp__visualize__show_widget` is NOT available):
+
+Output the digest HTML as an inline Cowork artifact immediately after saving
+the file. Wrap the complete HTML in an artifact block so Cowork renders it
+inline in the chat rather than showing it as a code block.
+
+**HTML adaptation rules (apply to BOTH paths):**
+
+- Strip `<!DOCTYPE>`, `<html>`, `<head>`, and `<body>` tags — output only the
+  `<style>` block and body content.
+- Replace the outer page background (`#EEF1F3`) and card background (`#FFFFFF`)
+  with CSS variables (`var(--surface-0)` and `var(--surface-2)` respectively)
+  so the widget respects the host's light/dark mode.
+- Replace generic text colors on body text and muted text with
+  `var(--text-primary)` and `var(--text-secondary)`.
+- Replace border colors with `var(--border)`.
+- **Keep Falke brand colors as-is** — `#F15022` (orange), `#C7491A` (deep
+  orange), `#1A2A33` (navy) — brand identity used in the header band, accent
+  rule, category numbers, and badges. These do not adapt to theme.
+- Do **not** use `position: fixed`.
+- The outer `.page` wrapper: `background: var(--surface-2)`,
+  `border: 0.5px solid var(--border)`.
+
+Render the artifact immediately after saving the HTML file, before the chat
+hand-back summary line.
+
+---
+
 ### Step 4 — Draft nudges for overdue waiting-on-a-contact items (DRAFT ONLY)
 
 For the **time-sensitive / overdue** items in category 2 (and only those — this is
