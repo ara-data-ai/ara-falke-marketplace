@@ -59,8 +59,12 @@ on run argv
 		-- Resolve the one named account. If it doesn't exist, error (Python treats
 		-- a nonzero exit / error as fail-loud).
 		set theAccount to (first account whose name is acctName)
-		-- The account's INBOX only (bounded scope) — not every mailbox.
-		set theInbox to (mailbox "INBOX" of theAccount)
+		-- The account's inbox only (bounded scope) — not every mailbox.
+		-- Provider-agnostic resolution: IMAP/Gmail name the inbox "INBOX";
+		-- Microsoft 365 / Exchange do NOT (e.g. "Inbox"). Try the IMAP name
+		-- first, then fall back to a case-insensitive match against THIS
+		-- account's own mailboxes. Fails loud (errors) if no inbox resolves.
+		set theInbox to (my resolveInbox(theAccount))
 		-- Bounded DELTA: only messages newer than the cutoff.
 		set newMsgs to (messages of theInbox whose date received > cutoffDate)
 
@@ -92,6 +96,39 @@ on run argv
 	set AppleScript's text item delimiters to ""
 	return outText
 end run
+
+-- Resolve the inbox of ONE account, provider-agnostically and within that
+-- account's own mailboxes only (preserves COND-8 — never the app-level unified
+-- `inbox`, which would span every account). IMAP/Gmail expose "INBOX"; Exchange
+-- exposes a differently-cased/named inbox. Try the literal IMAP name first
+-- (fast, common path), then fall back to a case-insensitive name match against
+-- this account's mailboxes. Fail LOUD (error) if no inbox can be resolved.
+on resolveInbox(theAccount)
+	tell application "Mail"
+		try
+			return (mailbox "INBOX" of theAccount)
+		end try
+		repeat with mb in (mailboxes of theAccount)
+			set mbName to ""
+			try
+				set mbName to (name of mb) as text
+			end try
+			if my nameLooksLikeInbox(mbName) then return mb
+		end repeat
+	end tell
+	error "no inbox mailbox could be resolved for the account"
+end resolveInbox
+
+-- True iff a mailbox name is the account's inbox (case-insensitive exact match
+-- on "inbox"). Mirrors the draft-side nameLooksLikeDrafts discipline. Exact
+-- (not substring) so it can't match e.g. an "Inbox Archive" subfolder.
+on nameLooksLikeInbox(mbName)
+	if mbName is "" then return false
+	ignoring case
+		if mbName is "inbox" then return true
+	end ignoring
+	return false
+end nameLooksLikeInbox
 
 -- Parse "YYYY-MM-DD HH:MM:SS" into an AppleScript date from integer components.
 -- The cutoff is our own code's value, but it is still bound as data and the date
