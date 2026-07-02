@@ -136,12 +136,13 @@ Then bookmark http://127.0.0.1:8787 — or set it as a Chrome startup page
   origins; concurrent refreshes are refused (409).
 - The optional 7:00 AM weekday run just POSTs to `/refresh` — one code path.
 
-**Config** (optional keys in `~/.falke-business-pulse/config.json`):
+**Config** (optional key in `~/.falke-business-pulse/config.json`). The refresh
+command itself is fixed in the server — not configurable, so a config-file
+write can never become arbitrary command execution (Floyd gate F3):
 
 | Key | Default | What it is |
 |---|---|---|
 | `pulse_html_dir` | `~/Claude/Projects/Falke-Business-Pulse` | where the skill saves `pulse-*.html` |
-| `refresh_command` | `claude -p "run my morning pulse" --permission-mode acceptEdits` | the headless run the button triggers |
 
 **Refresh-path prerequisites** (the viewer works without them; the button needs
 them): Claude Code CLI installed and signed in, this plugin installed, and Mail

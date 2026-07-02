@@ -45,16 +45,27 @@ done
 # ~45 MB, no admin rights, fully contained in the plugin data dir.
 if [ -z "${PYBIN}" ] && [ "$(uname -s)" = "Darwin" ]; then
   echo "[falke-business-pulse] No Python >=3.10 found — downloading a private copy (one-time, ~45 MB)..." >&2
+  # Pinned release + per-arch SHA-256 (from the published .sha256 sibling
+  # assets). Verified fail-closed below — a tampered or truncated download
+  # never becomes the interpreter that runs the mail agent (Floyd gate F1).
   case "$(uname -m)" in
-    arm64)  PBS_ARCH="aarch64" ;;
-    *)      PBS_ARCH="x86_64" ;;
+    arm64)  PBS_ARCH="aarch64"
+            PBS_SHA="5dfd4d81ad8ea0407e6153ed998a5fba332275c60ece81c6db2b58e443de60b9" ;;
+    *)      PBS_ARCH="x86_64"
+            PBS_SHA="ea29fd1b174daf71ff0b3d14e7a36f8afc3ded2a2b086d1d39b8a4ee95dada24" ;;
   esac
   PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20250106/cpython-3.12.8%2B20250106-${PBS_ARCH}-apple-darwin-install_only.tar.gz"
   curl -fsSL "${PBS_URL}" -o "${DATA}/python.tar.gz"
+  if ! echo "${PBS_SHA}  ${DATA}/python.tar.gz" | shasum -a 256 -c - >/dev/null 2>&1; then
+    rm -f "${DATA}/python.tar.gz"
+    echo "[falke-business-pulse] ERROR: Python download failed checksum verification — refusing to install it." >&2
+    echo "[falke-business-pulse] Retry by reopening the session; if it persists, contact ARA." >&2
+    exit 1
+  fi
   tar -xzf "${DATA}/python.tar.gz" -C "${DATA}"
   rm -f "${DATA}/python.tar.gz"
   PYBIN="${DATA}/python/bin/python3"
-  echo "[falke-business-pulse] Python ready." >&2
+  echo "[falke-business-pulse] Python ready (checksum verified)." >&2
 fi
 
 if [ -z "${PYBIN}" ]; then
