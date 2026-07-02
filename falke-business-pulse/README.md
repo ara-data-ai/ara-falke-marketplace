@@ -136,6 +136,11 @@ Then bookmark http://127.0.0.1:8787 — or set it as a Chrome startup page
   origins; concurrent refreshes are refused (409).
 - The optional 7:00 AM weekday run just POSTs to `/refresh` — one code path.
 
+> **Accepted residual risk (Floyd gate F2):** an Origin-less local client (any
+> process already running as the user) can still POST `/refresh` and trigger a
+> paid agent run — a denial-of-wallet nuisance, not a data-exposure path; the
+> 409 concurrency guard bounds it to one run at a time.
+
 **Config** (optional key in `~/.falke-business-pulse/config.json`). The refresh
 command itself is fixed in the server — not configurable, so a config-file
 write can never become arbitrary command execution (Floyd gate F3):
