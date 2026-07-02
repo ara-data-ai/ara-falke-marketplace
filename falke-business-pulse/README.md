@@ -102,3 +102,44 @@ the pulse runs normally without the Teams post.
 The **Teams webhook URL is a secret** and is deliberately NOT in `.mcp.json` and
 NOT in the repo — it lives only in the local `config.json` (outside git, outside
 the Dropbox folder), never baked into the plugin (COND-3).
+
+## Pulse viewer — bookmarked webpage with a Refresh button (`pulse-server/`)
+
+A localhost-only web viewer so the pulse is the first thing you see when you
+open Chrome each morning. Serves the **latest** pulse HTML at
+**http://127.0.0.1:8787** with a toolbar showing
+"Data last refreshed on hh:mm:ss dd/mm/yyyy" and a **Refresh** button that
+runs the skill headlessly in Claude Code and reloads the page when done.
+
+**Install (once per laptop):**
+
+```sh
+cd <plugin dir>/pulse-server
+./install.sh --with-morning-run   # omit the flag to skip the 7:00 AM weekday run
+```
+
+Then bookmark http://127.0.0.1:8787 — or set it as a Chrome startup page
+(Chrome > Settings > On startup > Open a specific page).
+
+**How it holds up:**
+
+- The server is a launchd agent with `KeepAlive` — starts at login, restarts on
+  crash, survives sleep/wake (localhost has no remote sockets to drop).
+- Serving and refreshing **fail independently**: if a refresh fails, the page
+  still shows the last good pulse with its timestamp, and the button reports
+  the error ("open Claude Code and run the pulse manually"). Never a blank page.
+- Bound to 127.0.0.1 only; `POST /refresh` rejects non-localhost browser
+  origins; concurrent refreshes are refused (409).
+- The optional 7:00 AM weekday run just POSTs to `/refresh` — one code path.
+
+**Config** (optional keys in `~/.falke-business-pulse/config.json`):
+
+| Key | Default | What it is |
+|---|---|---|
+| `pulse_html_dir` | `~/Claude/Projects/Falke-Business-Pulse` | where the skill saves `pulse-*.html` |
+| `refresh_command` | `claude -p "run my morning pulse" --permission-mode acceptEdits` | the headless run the button triggers |
+
+**Refresh-path prerequisites** (the viewer works without them; the button needs
+them): Claude Code CLI installed and signed in, this plugin installed, and Mail
+automation permission granted. Each Refresh click is a real agent run (a few
+minutes) — it is a morning brief, not a live dashboard.
