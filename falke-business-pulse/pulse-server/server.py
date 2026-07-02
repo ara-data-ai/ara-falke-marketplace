@@ -29,9 +29,14 @@ DEFAULTS = {
     # Directory the skill writes pulse-YYYY-MM-DD.html files into.
     "pulse_html_dir": "~/Claude/Projects/Falke-Business-Pulse",
     # Headless run. --permission-mode acceptEdits lets the skill write the
-    # HTML + state files without prompting; MCP mail tools may additionally
-    # need a permissions allowlist in the project .claude/settings.json.
-    "refresh_command": 'claude -p "run my morning pulse" --permission-mode acceptEdits',
+    # HTML + state files without prompting; --allowedTools pre-approves the
+    # plugin's two mail tools so the run never stalls on a permission prompt
+    # (headless runs cannot prompt — an unapproved tool call just fails).
+    "refresh_command": (
+        'claude -p "run my morning pulse" --permission-mode acceptEdits'
+        ' --allowedTools "mcp__plugin_falke-business-pulse_apple-mail__read_apple_mail,'
+        'mcp__plugin_falke-business-pulse_apple-mail__create_apple_mail_draft"'
+    ),
 }
 
 _state_lock = threading.Lock()

@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 # falke-business-pulse — first-run dependency bootstrap (SessionStart hook).
 #
-# The bundled apple-mail MCP server has ONE runtime dependency: the MCP Python
-# SDK (mcp>=1.2.0, see apple-mail/requirements.txt). This installs it ONCE into a
-# persistent venv under ${CLAUDE_PLUGIN_DATA}, reinstalling only when the bundled
-# requirements.txt changes (the canonical diff-stamp pattern from
-# code.claude.com/docs/en/plugins-reference). .mcp.json points the apple-mail
-# server's `command` at ${CLAUDE_PLUGIN_DATA}/venv/bin/python3, so this venv must
-# exist before the server first starts — the SessionStart hook guarantees that.
-#
-# Trimmed from the proven falke-bid-tools bootstrap: NO Chromium/Playwright step
-# (this server has no such dependency) and no render-mode marker. Pure-Python dep
-# only.
+# Makes the plugin self-sufficient on a fresh, non-technical laptop:
+#   1. Finds Python >=3.10 — and if none exists on macOS, downloads a private
+#      standalone CPython into ${CLAUDE_PLUGIN_DATA} (no Homebrew, no admin
+#      password, nothing touched outside the plugin's own data dir).
+#   2. Creates the venv for the apple-mail MCP server (mcp>=1.2.0), reinstalling
+#      only when the bundled requirements.txt changes (diff-stamp pattern).
+#   3. macOS local sessions only: installs/refreshes the pulse-viewer launchd
+#      agents (localhost:8787 + 7:00 AM weekday refresh), re-running only when
+#      the pulse-server files change (hash-stamp), so the server isn't churned
+#      every session.
 #
 # Idempotent and quiet on the happy path. Floyd reviews this for the execution
-# threat model before ship, like the bid-tools one.
+# threat model before ship.
 
 set -euo pipefail
 
@@ -27,36 +26,77 @@ STAMP="${DATA}/requirements.installed.txt"
 
 mkdir -p "${DATA}"
 
-# Pick a Python >=3.10 (the mcp SDK floor). macOS stock python3 is often 3.9,
-# which CANNOT install `mcp` — pip would fail with a confusing "no matching
-# distribution" error and leave a broken server. Fail LOUD with an actionable
-# message instead, consistent with the rest of this system's fail-loud discipline.
+# ---------------------------------------------------------------------------
+# 1. Python >=3.10 (the mcp SDK floor). Candidates include a previously
+#    downloaded standalone copy under DATA. macOS stock python3 is often 3.9,
+#    which CANNOT install `mcp`.
+# ---------------------------------------------------------------------------
 PYBIN=""
-for cand in python3.13 python3.12 python3.11 python3.10 python3; do
+for cand in "${DATA}/python/bin/python3" python3.13 python3.12 python3.11 python3.10 python3; do
   if command -v "${cand}" >/dev/null 2>&1 && \
      "${cand}" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3,10) else 1)' 2>/dev/null; then
     PYBIN="${cand}"
     break
   fi
 done
+
+# No suitable Python + we're on a Mac -> download a pinned standalone CPython
+# (astral-sh/python-build-standalone, install_only build) into DATA. One-time,
+# ~45 MB, no admin rights, fully contained in the plugin data dir.
+if [ -z "${PYBIN}" ] && [ "$(uname -s)" = "Darwin" ]; then
+  echo "[falke-business-pulse] No Python >=3.10 found — downloading a private copy (one-time, ~45 MB)..." >&2
+  case "$(uname -m)" in
+    arm64)  PBS_ARCH="aarch64" ;;
+    *)      PBS_ARCH="x86_64" ;;
+  esac
+  PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20250106/cpython-3.12.8%2B20250106-${PBS_ARCH}-apple-darwin-install_only.tar.gz"
+  curl -fsSL "${PBS_URL}" -o "${DATA}/python.tar.gz"
+  tar -xzf "${DATA}/python.tar.gz" -C "${DATA}"
+  rm -f "${DATA}/python.tar.gz"
+  PYBIN="${DATA}/python/bin/python3"
+  echo "[falke-business-pulse] Python ready." >&2
+fi
+
 if [ -z "${PYBIN}" ]; then
   echo "[falke-business-pulse] ERROR: need Python >=3.10 for the mail tool, none found." >&2
-  echo "[falke-business-pulse] Install it (e.g. 'brew install python@3.12') and reopen Cowork." >&2
+  echo "[falke-business-pulse] Install it (e.g. 'brew install python@3.12') and reopen the session." >&2
   exit 1
 fi
 
-# Reinstall only if the bundled manifest differs from what we last installed
-# (covers both first run and a dependency-changing plugin update).
+# Absolute path (launchd plists cannot use a bare command name).
+case "${PYBIN}" in
+  /*) PYABS="${PYBIN}" ;;
+  *)  PYABS="$(command -v "${PYBIN}")" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 2. MCP-server venv — reinstall only if the bundled manifest changed.
+# ---------------------------------------------------------------------------
 if [ ! -f "${STAMP}" ] || ! diff -q "${REQ}" "${STAMP}" >/dev/null 2>&1; then
   echo "[falke-business-pulse] Setting up dependencies (first run may take ~30s)..." >&2
 
-  "${PYBIN}" -m venv "${VENV}"
+  "${PYABS}" -m venv "${VENV}"
   "${VENV}/bin/pip" install --quiet --upgrade pip
   "${VENV}/bin/pip" install --quiet -r "${REQ}"
 
   # Stamp success LAST so a mid-install failure retries next session.
   cp "${REQ}" "${STAMP}"
   echo "[falke-business-pulse] Setup complete." >&2
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Pulse viewer (macOS local sessions only — launchd doesn't exist in the
+#    Cowork cloud sandbox). Install/refresh only when the files change.
+# ---------------------------------------------------------------------------
+PS_DIR="${ROOT}/pulse-server"
+PS_STAMP="${DATA}/pulse-server.installed"
+if [ "$(uname -s)" = "Darwin" ] && command -v launchctl >/dev/null 2>&1 && [ -d "${PS_DIR}" ]; then
+  PS_SIG="$(cat "${PS_DIR}/server.py" "${PS_DIR}/install.sh" "${PS_DIR}"/launchd/*.plist 2>/dev/null | shasum | cut -d' ' -f1)"
+  if [ ! -f "${PS_STAMP}" ] || [ "$(cat "${PS_STAMP}")" != "${PS_SIG}" ]; then
+    echo "[falke-business-pulse] Installing the pulse viewer — bookmark http://127.0.0.1:8787" >&2
+    PYTHON="${PYABS}" bash "${PS_DIR}/install.sh" --with-morning-run >&2
+    echo "${PS_SIG}" > "${PS_STAMP}"
+  fi
 fi
 
 exit 0

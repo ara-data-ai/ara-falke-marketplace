@@ -211,6 +211,13 @@ continuing:
      pulse'** or **'update my Teams webhook'**."
    - When Teams was skipped, add: "Teams delivery is **off**; say 'update my Teams
      webhook' anytime to turn it on."
+4. **Point them at the pulse webpage (local macOS sessions only).** The plugin
+   auto-installs a localhost viewer on first session. Tell them once, as part of
+   the first-run confirmation: "Your pulse also lives at
+   **http://127.0.0.1:8787** — bookmark it in Chrome (or set it as your startup
+   page: Chrome > Settings > On startup). It always shows the latest pulse with
+   a 'Data last refreshed' timestamp, refreshes itself weekday mornings at 7:00,
+   and has a Refresh button for on-demand updates."
 
 **The webhook is a SECRET.** Persist it ONLY in this local config file (outside
 git, outside the Dropbox folder). **Never echo it into the digest, the chat, the

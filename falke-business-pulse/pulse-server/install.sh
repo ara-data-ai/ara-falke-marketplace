@@ -6,7 +6,9 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTS="$HOME/Library/LaunchAgents"
-PYTHON="$(command -v python3)"
+# Caller (bootstrap.sh) passes the resolved interpreter via $PYTHON; fall back
+# to whatever python3 is on PATH for manual installs.
+PYTHON="${PYTHON:-$(command -v python3 || true)}"
 
 if [[ -z "$PYTHON" ]]; then
   echo "[pulse-server] ERROR: python3 not found on PATH." >&2
